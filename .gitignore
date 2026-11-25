@@ -1,0 +1,14 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+
+# Node / Vite / Tauri frontend
+**/node_modules/
+**/dist/
+apps/bloxd-desktop/src-tauri/gen/
+apps/bloxd-desktop/src/bindings.generated.ts
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.log

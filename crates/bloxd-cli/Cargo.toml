@@ -1,0 +1,18 @@
+[package]
+name = "bloxd-cli"
+version = "0.2.0"
+edition = "2021"
+
+[[bin]]
+name = "bloxd"
+path = "src/main.rs"
+
+[dependencies]
+bloxd-core = { path = "../bloxd-core" }
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

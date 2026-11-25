@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/bloxd-core",
+    "crates/bloxd-cli",
+    "apps/bloxd-desktop/src-tauri",
+]
+resolver = "2"

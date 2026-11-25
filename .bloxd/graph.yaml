@@ -1,0 +1,219 @@
+version: 1
+project: bloxd
+updated_at: "2026-11-25T20:32:00Z"
+
+nodes:
+  - id: bloxd-core
+    title: bloxd-core Engine
+    kind: system
+    parent_id: null
+    status: done
+    summary: Pure Rust core engine for .bloxd/ schema, atomic storage, file watcher, and context compilation.
+    linked_files:
+      - crates/bloxd-core/src/lib.rs
+      - crates/bloxd-core/Cargo.toml
+    spec_file: specs/bloxd-core.md
+
+  - id: bloxd-desktop
+    title: bloxd-desktop App
+    kind: system
+    parent_id: null
+    status: done
+    summary: Tauri v2 + React + @xyflow/react + Tailwind desktop canvas application.
+    linked_files:
+      - apps/bloxd-desktop/package.json
+      - apps/bloxd-desktop/src/App.tsx
+    spec_file: specs/bloxd-desktop.md
+
+  - id: bloxd-mcp
+    title: bloxd-mcp Server (v0.2)
+    kind: service
+    parent_id: null
+    status: planned
+    summary: Thin stdio MCP server wrapping bloxd-core for direct agent tool calls in v0.2.
+    linked_files: []
+    spec_file: specs/bloxd-mcp.md
+
+  - id: core-model
+    title: Graph & Layout Models
+    kind: module
+    parent_id: bloxd-core
+    status: done
+    summary: Strongly typed Graph, Node, Edge, Status, Layout, and ProjectSnapshot structs with Specta derives.
+    linked_files:
+      - crates/bloxd-core/src/model.rs
+    spec_file: specs/core-model.md
+
+  - id: core-storage
+    title: Atomic Storage & Auto-Place
+    kind: module
+    parent_id: bloxd-core
+    status: done
+    summary: Atomic temp-file + persist writes for graph.yaml, layout.json, specs/*.md, plus auto-placement.
+    linked_files:
+      - crates/bloxd-core/src/storage.rs
+      - crates/bloxd-core/tests/storage_tests.rs
+    spec_file: specs/core-storage.md
+
+  - id: core-watcher
+    title: Debounced File Watcher
+    kind: module
+    parent_id: bloxd-core
+    status: done
+    summary: 250 ms debounced notify watcher for .bloxd/graph.yaml and .bloxd/specs/.
+    linked_files:
+      - crates/bloxd-core/src/watcher.rs
+    spec_file: specs/core-watcher.md
+
+  - id: core-context
+    title: Scoped Context Compiler
+    kind: module
+    parent_id: bloxd-core
+    status: done
+    summary: Compiles target node, spec, parent, 1-hop neighbors, and child tasks into Markdown.
+    linked_files:
+      - crates/bloxd-core/src/context.rs
+    spec_file: specs/core-context.md
+
+  - id: core-agents-md
+    title: AGENTS.md Generator
+    kind: module
+    parent_id: bloxd-core
+    status: done
+    summary: Generates default .bloxd/AGENTS.md instructions when initializing a repo.
+    linked_files:
+      - crates/bloxd-core/src/agents_md.rs
+    spec_file: specs/core-agents-md.md
+
+  - id: tauri-ipc
+    title: Tauri IPC & Watcher Bridge
+    kind: service
+    parent_id: bloxd-desktop
+    status: done
+    summary: Typed tauri-specta commands and bloxd://graph-updated event emitter.
+    linked_files:
+      - apps/bloxd-desktop/src-tauri/src/lib.rs
+      - apps/bloxd-desktop/src/bindings.ts
+    spec_file: specs/tauri-ipc.md
+
+  - id: project-store
+    title: Zustand Project Store
+    kind: module
+    parent_id: bloxd-desktop
+    status: done
+    summary: Graph/layout CRUD, layer navigation, debounced persistence, and external snapshot reconciliation.
+    linked_files:
+      - apps/bloxd-desktop/src/store/useProjectStore.ts
+    spec_file: specs/project-store.md
+
+  - id: nested-canvas
+    title: Zoomable Nested Canvas
+    kind: module
+    parent_id: bloxd-desktop
+    status: done
+    summary: React Flow canvas supporting drill-down layers, breadcrumbs, unified overview, and milestone overlay.
+    linked_files:
+      - apps/bloxd-desktop/src/canvas/ArchitectureCanvas.tsx
+      - apps/bloxd-desktop/src/canvas/BloxdNode.tsx
+      - apps/bloxd-desktop/src/canvas/BloxdEdge.tsx
+    spec_file: specs/nested-canvas.md
+
+  - id: node-inspector
+    title: Node Inspector Drawer
+    kind: module
+    parent_id: bloxd-desktop
+    status: done
+    summary: Side drawer for editing node metadata, status, linked files, and specs/<id>.md.
+    linked_files:
+      - apps/bloxd-desktop/src/inspector/NodeInspector.tsx
+    spec_file: specs/node-inspector.md
+
+  - id: command-palette
+    title: Command Palette & Shortcuts
+    kind: module
+    parent_id: bloxd-desktop
+    status: done
+    summary: Ctrl+K quick jump/add palette, Backspace layer ascend, and Ctrl+Shift+C context export.
+    linked_files:
+      - apps/bloxd-desktop/src/components/CommandPalette.tsx
+      - apps/bloxd-desktop/src/components/Toast.tsx
+    spec_file: specs/command-palette.md
+
+edges:
+  - id: e-desktop-core
+    source: bloxd-desktop
+    target: bloxd-core
+    label: embeds crate
+    kind: dependency
+
+  - id: e-mcp-core
+    source: bloxd-mcp
+    target: bloxd-core
+    label: wraps core (v0.2)
+    kind: dependency
+
+  - id: e-storage-model
+    source: core-storage
+    target: core-model
+    label: serializes
+    kind: dependency
+
+  - id: e-storage-agents
+    source: core-storage
+    target: core-agents-md
+    label: initializes
+    kind: triggers
+
+  - id: e-context-storage
+    source: core-context
+    target: core-storage
+    label: reads specs
+    kind: data_flow
+
+  - id: e-watcher-storage
+    source: core-watcher
+    target: core-storage
+    label: triggers reload
+    kind: triggers
+
+  - id: e-canvas-store
+    source: nested-canvas
+    target: project-store
+    label: subscribes & mutates
+    kind: data_flow
+
+  - id: e-inspector-store
+    source: node-inspector
+    target: project-store
+    label: updates node & spec
+    kind: data_flow
+
+  - id: e-palette-store
+    source: command-palette
+    target: project-store
+    label: jumps to node
+    kind: triggers
+
+  - id: e-store-ipc
+    source: project-store
+    target: tauri-ipc
+    label: invokes commands
+    kind: data_flow
+
+  - id: e-ipc-core-storage
+    source: tauri-ipc
+    target: core-storage
+    label: load/save .bloxd/
+    kind: data_flow
+
+  - id: e-ipc-core-watcher
+    source: tauri-ipc
+    target: core-watcher
+    label: streams fs events
+    kind: triggers
+
+  - id: e-ipc-core-context
+    source: tauri-ipc
+    target: core-context
+    label: compiles context
+    kind: data_flow
