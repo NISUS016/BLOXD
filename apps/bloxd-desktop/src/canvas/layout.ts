@@ -8,13 +8,15 @@ const DEFAULT_HEIGHT = 136;
 
 /**
  * Runs Dagre layout for a single layer's nodes and internal edges.
- * Returns top-left coordinates keyed by node ID.
+ * Optional `sizeOverrides` lets Unified mode lay out parent containers using their expanded sizes.
  */
 export function computeDagreLayout(
   nodes: BloxdNode[],
   edges: BloxdEdge[],
   direction: LayoutDirection,
-  existingLayout: Record<string, NodeLayout>
+  existingLayout: Record<string, NodeLayout>,
+  sizeOverrides?: Record<string, { width: number; height: number }>,
+  marginTop = 60
 ): Record<string, { x: number; y: number }> {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
@@ -22,17 +24,18 @@ export function computeDagreLayout(
     rankdir: direction,
     nodesep: 56,
     ranksep: 84,
-    marginx: 60,
-    marginy: 60,
+    marginx: 50,
+    marginy: marginTop,
   });
 
   const nodeIds = new Set(nodes.map((n) => n.id));
 
   for (const n of nodes) {
+    const override = sizeOverrides?.[n.id];
     const saved = existingLayout[n.id];
     g.setNode(n.id, {
-      width: saved?.width ?? DEFAULT_WIDTH,
-      height: saved?.height ?? DEFAULT_HEIGHT,
+      width: override?.width ?? saved?.width ?? DEFAULT_WIDTH,
+      height: override?.height ?? saved?.height ?? DEFAULT_HEIGHT,
     });
   }
 
@@ -76,12 +79,14 @@ export function computeUnifiedContainerSizes(
 
   const sizes: Record<string, { width: number; height: number }> = {};
 
-  // Post-order traversal so nested containers size around their already-sized children.
-  const computeSize = (node: BloxdNode, visiting = new Set<string>()): { width: number; height: number } => {
+  const computeSize = (
+    node: BloxdNode,
+    visiting = new Set<string>()
+  ): { width: number; height: number } => {
     if (sizes[node.id]) return sizes[node.id];
     const saved = layoutNodes[node.id];
-    const baseWidth = saved?.width ?? DEFAULT_WIDTH;
-    const baseHeight = saved?.height ?? DEFAULT_HEIGHT;
+    const baseWidth = Math.max(saved?.width ?? DEFAULT_WIDTH, DEFAULT_WIDTH);
+    const baseHeight = Math.max(saved?.height ?? DEFAULT_HEIGHT, DEFAULT_HEIGHT);
 
     if (visiting.has(node.id)) {
       return { width: baseWidth, height: baseHeight };
@@ -101,8 +106,8 @@ export function computeUnifiedContainerSizes(
     children.forEach((child, idx) => {
       const childSize = computeSize(child, visiting);
       const childPos = layoutNodes[child.id] ?? {
-        x: 60 + (idx % 3) * 280,
-        y: 70 + Math.floor(idx / 3) * 150,
+        x: 40 + (idx % 3) * 290,
+        y: 112 + Math.floor(idx / 3) * 160,
       };
       maxRight = Math.max(maxRight, childPos.x + childSize.width);
       maxBottom = Math.max(maxBottom, childPos.y + childSize.height);

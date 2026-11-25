@@ -4,6 +4,7 @@ import {
   Background,
   BackgroundVariant,
   Connection,
+  ConnectionMode,
   Controls,
   Edge,
   MarkerType,
@@ -56,9 +57,11 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
     layout,
     currentParentId,
     viewMode,
+    snapToGrid,
     setCurrentParentId,
     jumpToNode,
     setSelection,
+    openInspector,
     addEdge,
     updateNodeLayout,
     updateViewport,
@@ -247,32 +250,255 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
     });
   }, [graph, layout, layerKey, setViewport, fitView]);
 
+  // Auto-arrange Unified view once when switching into Unified mode if root containers overlap
+  const lastUnifiedLayoutProjectRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!graph || !layout || viewMode !== "unified") return;
+    const key = `${graph.project}:${graph.nodes.length}`;
+    if (lastUnifiedLayoutProjectRef.current === key) return;
+    lastUnifiedLayoutProjectRef.current = key;
+
+    // Check if any root-level nodes overlap after container expansion
+    const containerSizes = computeUnifiedContainerSizes(graph.nodes, layout.nodes);
+    const roots = graph.nodes.filter((n) => (n.parent_id ?? null) === null);
+    let hasOverlap = false;
+    for (let i = 0; i < roots.length && !hasOverlap; i++) {
+      for (let j = i + 1; j < roots.length; j++) {
+        const aPos = layout.nodes[roots[i].id];
+        const bPos = layout.nodes[roots[j].id];
+        if (!aPos || !bPos) continue;
+        const aSize = containerSizes[roots[i].id] ?? aPos;
+        const bSize = containerSizes[roots[j].id] ?? bPos;
+        const overlapX = aPos.x < bPos.x + bSize.width && aPos.x + aSize.width > bPos.x;
+        const overlapY = aPos.y < bPos.y + bSize.height && aPos.y + aSize.height > bPos.y;
+        if (overlapX && overlapY) {
+          hasOverlap = true;
+          break;
+        }
+      }
+    }
+    if (hasOverlap) {
+      useProjectStore.getState().autoLayoutCurrentLayer();
+    }
+  }, [graph, layout, viewMode]);
+
   const rfEdges: Edge[] = useMemo(() => {
     if (!graph) return [];
     const visibleIds = new Set(rfNodes.map((n) => n.id));
+    const rfNodeMap = new Map(rfNodes.map((n) => [n.id, n]));
+    const absPosCache = new Map<string, { x: number; y: number }>();
+    const getAbsPos = (id: string, seen = new Set<string>()): { x: number; y: number } => {
+      if (absPosCache.has(id)) return absPosCache.get(id)!;
+      const n = rfNodeMap.get(id);
+      if (!n || seen.has(id)) return { x: 0, y: 0 };
+      seen.add(id);
+      const parentAbs = n.parentId ? getAbsPos(n.parentId, seen) : { x: 0, y: 0 };
+      const abs = { x: parentAbs.x + n.position.x, y: parentAbs.y + n.position.y };
+      absPosCache.set(id, abs);
+      return abs;
+    };
+
+    const nodeRects = new Map<
+      string,
+      { cx: number; cy: number }
+    >();
+    for (const n of rfNodes) {
+      const w = (n.style?.width as number | undefined) ?? 260;
+      const h = (n.style?.height as number | undefined) ?? 136;
+      const abs = getAbsPos(n.id);
+      nodeRects.set(n.id, {
+        cx: abs.x + w / 2,
+        cy: abs.y + h / 2,
+      });
+    }
+
     const inProgressIds = new Set(
       graph.nodes.filter((n) => n.status === "in_progress").map((n) => n.id)
     );
-    return graph.edges
-      .filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target))
-      .map((e) => {
-        const isActive =
-          inProgressIds.has(e.source) || inProgressIds.has(e.target);
+
+    const KIND_EDGE_COLORS: Record<string, string> = {
+      data_flow: "#22d3ee",
+      triggers: "#a78bfa",
+      sequence: "#34d399",
+      dependency: "#60a5fa",
+    };
+
+    const ROLLUP_PALETTE = [
+      "#38bdf8",
+      "#c084fc",
+      "#34d399",
+      "#fb7185",
+      "#fbbf24",
+      "#818cf8",
+    ];
+
+    const pickHandles = (
+      sourceId: string,
+      targetId: string,
+      hasReverse: boolean,
+      isReverseSecond: boolean
+    ): { sourceHandle: string; targetHandle: string; curveOffset: number } => {
+      const s = nodeRects.get(sourceId);
+      const t = nodeRects.get(targetId);
+      if (!s || !t) {
+        return { sourceHandle: "right", targetHandle: "left", curveOffset: 0 };
+      }
+      const dx = t.cx - s.cx;
+      const dy = t.cy - s.cy;
+
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        if (dx >= 0) {
+          return hasReverse
+            ? isReverseSecond
+              ? { sourceHandle: "bottom", targetHandle: "bottom", curveOffset: 1 }
+              : { sourceHandle: "right", targetHandle: "left", curveOffset: -1 }
+            : { sourceHandle: "right", targetHandle: "left", curveOffset: 0 };
+        }
+        return hasReverse
+          ? isReverseSecond
+            ? { sourceHandle: "top", targetHandle: "top", curveOffset: 1 }
+            : { sourceHandle: "left", targetHandle: "right", curveOffset: -1 }
+          : { sourceHandle: "left", targetHandle: "right", curveOffset: 0 };
+      }
+
+      if (dy >= 0) {
+        return hasReverse
+          ? isReverseSecond
+            ? { sourceHandle: "right", targetHandle: "right", curveOffset: 1 }
+            : { sourceHandle: "bottom", targetHandle: "top", curveOffset: -1 }
+          : { sourceHandle: "bottom", targetHandle: "top", curveOffset: 0 };
+      }
+      return hasReverse
+        ? isReverseSecond
+          ? { sourceHandle: "left", targetHandle: "left", curveOffset: 1 }
+          : { sourceHandle: "top", targetHandle: "bottom", curveOffset: -1 }
+        : { sourceHandle: "top", targetHandle: "bottom", curveOffset: 0 };
+    };
+
+    const rawDirect = graph.edges.filter(
+      (e) => visibleIds.has(e.source) && visibleIds.has(e.target)
+    );
+    const directPairSet = new Set(rawDirect.map((e) => `${e.source}->${e.target}`));
+
+    const directEdges: Edge[] = rawDirect.map((e) => {
+      const isActive =
+        inProgressIds.has(e.source) || inProgressIds.has(e.target);
+      const hasReverse = directPairSet.has(`${e.target}->${e.source}`);
+      const isReverseSecond = hasReverse && e.source > e.target;
+      const { sourceHandle, targetHandle, curveOffset } = pickHandles(
+        e.source,
+        e.target,
+        hasReverse,
+        isReverseSecond
+      );
+      const color = isActive
+        ? "#f59e0b"
+        : KIND_EDGE_COLORS[e.kind] ?? "#60a5fa";
+
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        sourceHandle,
+        targetHandle,
+        type: "bloxd",
+        label: e.label ?? undefined,
+        animated: isActive,
+        data: {
+          curveOffset,
+          labelOffset: layout?.edge_labels?.[e.id],
+        },
+        style: { stroke: color, strokeWidth: isActive ? 2.2 : 1.85 },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color,
+        },
+      };
+    });
+
+    if (viewMode !== "nested") {
+      return directEdges;
+    }
+
+    // In Nested mode, roll up cross-layer edges between descendants onto their visible ancestors
+    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+    const findVisibleAncestor = (id: string): string | null => {
+      let cur: string | undefined | null = id;
+      const seen = new Set<string>();
+      while (cur && !seen.has(cur)) {
+        if (visibleIds.has(cur)) return cur;
+        seen.add(cur);
+        cur = byId.get(cur)?.parent_id;
+      }
+      return null;
+    };
+
+    const rolledUp = new Map<
+      string,
+      { source: string; target: string; labels: string[]; kinds: string[] }
+    >();
+
+    for (const e of graph.edges) {
+      const srcVis = findVisibleAncestor(e.source);
+      const dstVis = findVisibleAncestor(e.target);
+      if (!srcVis || !dstVis || srcVis === dstVis) continue;
+      const pairKey = `${srcVis}->${dstVis}`;
+      if (directPairSet.has(pairKey)) continue;
+
+      const entry = rolledUp.get(pairKey) ?? {
+        source: srcVis,
+        target: dstVis,
+        labels: [],
+        kinds: [],
+      };
+      if (e.label) entry.labels.push(e.label);
+      entry.kinds.push(e.kind);
+      rolledUp.set(pairKey, entry);
+    }
+
+    const rolledEdges: Edge[] = [...rolledUp.entries()].map(
+      ([pairKey, info], idx) => {
+        const reverseKey = `${info.target}->${info.source}`;
+        const hasReverse = rolledUp.has(reverseKey) || directPairSet.has(reverseKey);
+        const isReverseSecond = hasReverse && info.source > info.target;
+        const { sourceHandle, targetHandle, curveOffset } = pickHandles(
+          info.source,
+          info.target,
+          hasReverse,
+          isReverseSecond
+        );
+        const color = ROLLUP_PALETTE[idx % ROLLUP_PALETTE.length];
+
         return {
-          id: e.id,
-          source: e.source,
-          target: e.target,
+          id: `rollup-${pairKey}`,
+          source: info.source,
+          target: info.target,
+          sourceHandle,
+          targetHandle,
           type: "bloxd",
-          label: e.label ?? undefined,
-          animated: isActive,
-          style: isActive ? { stroke: "#f59e0b", strokeWidth: 2 } : undefined,
+          label:
+            info.labels.length === 1
+              ? info.labels[0]
+              : `${info.labels.length || 1} links`,
+          data: {
+            curveOffset,
+            labelOffset: layout?.edge_labels?.[`rollup-${pairKey}`],
+          },
+          style: {
+            stroke: color,
+            strokeWidth: 1.75,
+            strokeDasharray: "5 4",
+          },
           markerEnd: {
             type: MarkerType.ArrowClosed,
-            color: isActive ? "#f59e0b" : "#64748b",
+            color,
           },
         };
-      });
-  }, [graph, rfNodes]);
+      }
+    );
+
+    return [...directEdges, ...rolledEdges];
+  }, [graph, rfNodes, viewMode]);
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setRfNodes((nds) => applyNodeChanges(changes, nds));
@@ -324,10 +550,13 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onNodeDragStop={onNodeDragStop}
-        onNodeDoubleClick={(_, node) => handleOpenLayer(node.id)}
+        onNodeDoubleClick={(_, node) => openInspector(node.id)}
         onConnect={onConnect}
         onMoveEnd={onMoveEnd}
         onSelectionChange={onSelectionChange}
+        connectionMode={ConnectionMode.Loose}
+        snapToGrid={snapToGrid}
+        snapGrid={[20, 20]}
         deleteKeyCode={["Delete"]}
         colorMode="dark"
         proOptions={{ hideAttribution: true }}

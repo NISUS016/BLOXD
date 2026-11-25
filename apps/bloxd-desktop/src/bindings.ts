@@ -45,10 +45,16 @@ export interface Viewport {
   zoom: number;
 }
 
+export interface LabelOffset {
+  x: number;
+  y: number;
+}
+
 export interface Layout {
   version: number;
   nodes: Record<string, NodeLayout>;
   viewports: Record<string, Viewport>;
+  edge_labels?: Record<string, LabelOffset>;
 }
 
 export interface ProjectSnapshot {

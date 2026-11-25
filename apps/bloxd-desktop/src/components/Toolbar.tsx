@@ -12,6 +12,7 @@ export function Toolbar({ onOpenAddNode, onOpenPalette }: ToolbarProps) {
     graph,
     viewMode,
     layoutDirection,
+    snapToGrid,
     selectedNodeId,
     selectedEdgeId,
     loading,
@@ -19,6 +20,7 @@ export function Toolbar({ onOpenAddNode, onOpenPalette }: ToolbarProps) {
     openProject,
     setViewMode,
     setLayoutDirection,
+    toggleSnapToGrid,
     autoLayoutCurrentLayer,
     deleteNode,
     deleteEdge,
@@ -93,27 +95,42 @@ export function Toolbar({ onOpenAddNode, onOpenPalette }: ToolbarProps) {
             </button>
 
             {viewMode !== "graph" && (
-              <div className="flex items-center overflow-hidden rounded-md border border-slate-800 bg-slate-900 text-xs">
+              <>
+                <div className="flex items-center overflow-hidden rounded-md border border-slate-800 bg-slate-900 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => autoLayoutCurrentLayer(layoutDirection)}
+                    title={`Arrange nodes with Dagre (${layoutDirection})`}
+                    className="cursor-pointer px-2.5 py-1.5 font-medium text-slate-200 transition hover:bg-slate-800"
+                  >
+                    Auto-Layout
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLayoutDirection(nextDirection);
+                      autoLayoutCurrentLayer(nextDirection);
+                    }}
+                    title="Switch Dagre direction (LR / TB)"
+                    className="cursor-pointer border-l border-slate-800 px-2 py-1.5 font-mono text-[11px] text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
+                  >
+                    {layoutDirection}
+                  </button>
+                </div>
+
                 <button
                   type="button"
-                  onClick={() => autoLayoutCurrentLayer(layoutDirection)}
-                  title={`Arrange nodes with Dagre (${layoutDirection})`}
-                  className="cursor-pointer px-2.5 py-1.5 font-medium text-slate-200 transition hover:bg-slate-800"
+                  onClick={toggleSnapToGrid}
+                  title="Toggle 20px Snap-to-Grid"
+                  className={`cursor-pointer rounded-md border px-2.5 py-1.5 text-xs font-medium transition ${
+                    snapToGrid
+                      ? "border-blue-500/40 bg-blue-500/15 text-blue-300"
+                      : "border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200"
+                  }`}
                 >
-                  Auto-Layout
+                  Snap
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLayoutDirection(nextDirection);
-                    autoLayoutCurrentLayer(nextDirection);
-                  }}
-                  title="Switch Dagre direction (LR / TB)"
-                  className="cursor-pointer border-l border-slate-800 px-2 py-1.5 font-mono text-[11px] text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
-                >
-                  {layoutDirection}
-                </button>
-              </div>
+              </>
             )}
 
             {selectedNodeId && (

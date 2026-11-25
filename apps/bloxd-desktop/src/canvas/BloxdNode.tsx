@@ -1,6 +1,6 @@
 import { memo, useState } from "react";
 import { Handle, NodeProps, Position } from "@xyflow/react";
-import { BloxdNode as BloxdNodeModel, Status } from "../bindings";
+import { BloxdNode as BloxdNodeModel, NodeKind, Status } from "../bindings";
 
 export interface ExternalEdgeRef {
   edgeId: string;
@@ -42,12 +42,45 @@ const STATUS_STYLES: Record<
     badge: "!",
   },
   done: {
-    border: "border-emerald-500/80",
+    border: "border-emerald-500/70",
     dot: "bg-emerald-400",
     label: "done",
     badge: "✓",
   },
 };
+
+const KIND_STYLES: Record<
+  NodeKind,
+  { badge: string; accentBar: string }
+> = {
+  system: {
+    badge: "bg-blue-500/15 text-blue-300 ring-1 ring-blue-500/30",
+    accentBar: "bg-blue-500",
+  },
+  service: {
+    badge: "bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30",
+    accentBar: "bg-violet-500",
+  },
+  module: {
+    badge: "bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-500/30",
+    accentBar: "bg-cyan-500",
+  },
+  flow_step: {
+    badge: "bg-pink-500/15 text-pink-300 ring-1 ring-pink-500/30",
+    accentBar: "bg-pink-500",
+  },
+  task: {
+    badge: "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30",
+    accentBar: "bg-amber-500",
+  },
+  note: {
+    badge: "bg-slate-700/60 text-slate-300 ring-1 ring-slate-600/40",
+    accentBar: "bg-slate-500",
+  },
+};
+
+const HANDLE_CLASS =
+  "!h-2.5 !w-2.5 !border-2 !border-slate-900 !bg-slate-400 transition hover:!scale-125 hover:!bg-blue-400";
 
 export const BloxdNode = memo(function BloxdNode({
   data,
@@ -64,29 +97,35 @@ export const BloxdNode = memo(function BloxdNode({
     onJumpToNode,
   } = data as BloxdFlowNodeData;
   const statusStyle = STATUS_STYLES[model.status] ?? STATUS_STYLES.planned;
+  const kindStyle = KIND_STYLES[model.kind] ?? KIND_STYLES.module;
   const [popoverKind, setPopoverKind] = useState<"in" | "out" | null>(null);
 
   const activeList = popoverKind === "in" ? externalIn : externalOut;
 
   return (
     <div className="group relative h-full w-full">
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="!h-2.5 !w-2.5 !border-2 !border-slate-900 !bg-slate-400 hover:!bg-blue-400"
-      />
+      {/* 4-sided connection handles (works with ConnectionMode.Loose) */}
+      <Handle id="top" type="source" position={Position.Top} className={HANDLE_CLASS} />
+      <Handle id="right" type="source" position={Position.Right} className={HANDLE_CLASS} />
+      <Handle id="bottom" type="source" position={Position.Bottom} className={HANDLE_CLASS} />
+      <Handle id="left" type="source" position={Position.Left} className={HANDLE_CLASS} />
 
       {/* Bounded card surface so inner text/badges never overflow card bounds */}
       <div
-        className={`flex h-full w-full min-w-0 flex-col overflow-hidden rounded-xl border bg-slate-900/95 p-3 shadow-lg transition ${
+        className={`relative flex h-full w-full min-w-0 flex-col overflow-hidden rounded-xl border bg-slate-900/95 p-3 shadow-lg transition ${
           statusStyle.border
         } ${selected ? "ring-2 ring-blue-500" : ""} ${
           isGroupContainer ? "bg-slate-900/50 backdrop-blur-sm" : ""
         }`}
       >
+        {/* Kind color accent strip */}
+        <div className={`absolute inset-x-0 top-0 h-0.5 ${kindStyle.accentBar}`} />
+
         {/* Header row */}
-        <div className="flex min-w-0 shrink-0 items-center justify-between gap-2">
-          <span className="truncate rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-300">
+        <div className="flex min-w-0 shrink-0 items-center justify-between gap-2 pt-0.5">
+          <span
+            className={`truncate rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider ${kindStyle.badge}`}
+          >
             {model.kind.replace("_", " ")}
           </span>
           <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-slate-400">
@@ -171,7 +210,7 @@ export const BloxdNode = memo(function BloxdNode({
                 e.stopPropagation();
                 onOpenLayer(model.id);
               }}
-              title="Double-click node or click to open nested layer"
+              title="Click to open nested layer"
               className="nodrag shrink-0 cursor-pointer whitespace-nowrap rounded bg-slate-800/90 px-2 py-0.5 text-[10px] font-medium text-blue-300 transition hover:bg-blue-600 hover:text-white"
             >
               {childCount > 0 ? `${doneCount}/${childCount} · Open` : "Open Layer"}
@@ -228,12 +267,6 @@ export const BloxdNode = memo(function BloxdNode({
           </div>
         </div>
       )}
-
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="!h-2.5 !w-2.5 !border-2 !border-slate-900 !bg-slate-400 hover:!bg-blue-400"
-      />
     </div>
   );
 });

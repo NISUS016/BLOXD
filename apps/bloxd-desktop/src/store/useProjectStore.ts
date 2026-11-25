@@ -11,7 +11,11 @@ import {
   ProjectSnapshot,
   Viewport,
 } from "../bindings";
-import { computeDagreLayout, LayoutDirection } from "../canvas/layout";
+import {
+  computeDagreLayout,
+  computeUnifiedContainerSizes,
+  LayoutDirection,
+} from "../canvas/layout";
 
 export type ViewMode = "nested" | "unified" | "graph";
 
@@ -41,8 +45,10 @@ interface ProjectState {
   currentParentId: string | null;
   viewMode: ViewMode;
   layoutDirection: LayoutDirection;
+  snapToGrid: boolean;
   selectedNodeId: string | null;
   selectedEdgeId: string | null;
+  inspectedNodeId: string | null;
   loading: boolean;
   saving: boolean;
   error: string | null;
@@ -55,7 +61,9 @@ interface ProjectState {
   jumpToNode: (nodeId: string) => void;
   setViewMode: (mode: ViewMode) => void;
   setLayoutDirection: (dir: LayoutDirection) => void;
+  toggleSnapToGrid: () => void;
   setSelection: (nodeId: string | null, edgeId: string | null) => void;
+  openInspector: (nodeId: string | null) => void;
   showToast: (message: string, kind?: "info" | "success" | "error") => void;
   clearToast: () => void;
 
@@ -67,6 +75,7 @@ interface ProjectState {
   deleteEdge: (id: string) => void;
 
   updateNodeLayout: (id: string, patch: Partial<NodeLayout>) => void;
+  updateEdgeLabelOffset: (edgeId: string, offset: { x: number; y: number }) => void;
   updateViewport: (layerKey: string, viewport: Viewport) => void;
   autoLayoutCurrentLayer: (direction?: LayoutDirection) => void;
   ensureLayerLayout: (parentId: string | null) => void;
@@ -185,8 +194,10 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     currentParentId: null,
     viewMode: "nested",
     layoutDirection: "LR",
+    snapToGrid: true,
     selectedNodeId: null,
     selectedEdgeId: null,
+    inspectedNodeId: null,
     loading: false,
     saving: false,
     error: null,
@@ -237,6 +248,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         currentParentId: parentId,
         selectedNodeId: null,
         selectedEdgeId: null,
+        inspectedNodeId: null,
       }),
 
     ascendLayer: () => {
@@ -268,8 +280,17 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
     setLayoutDirection: (layoutDirection) => set({ layoutDirection }),
 
+    toggleSnapToGrid: () => set((s) => ({ snapToGrid: !s.snapToGrid })),
+
     setSelection: (selectedNodeId, selectedEdgeId) =>
       set({ selectedNodeId, selectedEdgeId }),
+
+    openInspector: (inspectedNodeId) =>
+      set({
+        inspectedNodeId,
+        selectedNodeId: inspectedNodeId,
+        selectedEdgeId: null,
+      }),
 
     addNode: ({ title, kind, summary = "", parentId }) => {
       const { graph, layout, currentParentId } = get();
@@ -373,6 +394,10 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           selectedNodeId && toDelete.has(selectedNodeId)
             ? null
             : selectedNodeId,
+        inspectedNodeId:
+          get().inspectedNodeId && toDelete.has(get().inspectedNodeId!)
+            ? null
+            : get().inspectedNodeId,
       });
       scheduleSaveGraph();
       scheduleSaveLayout();
@@ -437,6 +462,24 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       scheduleSaveLayout();
     },
 
+    updateEdgeLabelOffset: (edgeId, offset) => {
+      const { layout } = get();
+      if (!layout) return;
+      set({
+        layout: {
+          ...layout,
+          edge_labels: {
+            ...(layout.edge_labels ?? {}),
+            [edgeId]: {
+              x: Math.round(offset.x),
+              y: Math.round(offset.y),
+            },
+          },
+        },
+      });
+      scheduleSaveLayout();
+    },
+
     updateViewport: (layerKey, viewport) => {
       const { layout } = get();
       if (!layout) return;
@@ -475,9 +518,38 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         );
         if (layerNodes.length === 0) return;
 
+        // Include rolled-up edges between visible ancestors so Dagre arranges connected hubs cleanly
+        const visibleIds = new Set(layerNodes.map((n) => n.id));
+        const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+        const findVisibleAncestor = (id: string): string | null => {
+          let cur: string | undefined | null = id;
+          const seen = new Set<string>();
+          while (cur && !seen.has(cur)) {
+            if (visibleIds.has(cur)) return cur;
+            seen.add(cur);
+            cur = byId.get(cur)?.parent_id;
+          }
+          return null;
+        };
+
+        const layoutEdges: BloxdEdge[] = [...graph.edges];
+        for (const e of graph.edges) {
+          const src = findVisibleAncestor(e.source);
+          const dst = findVisibleAncestor(e.target);
+          if (src && dst && src !== dst) {
+            layoutEdges.push({
+              id: `virt-${src}-${dst}`,
+              source: src,
+              target: dst,
+              label: null,
+              kind: e.kind,
+            });
+          }
+        }
+
         const positions = computeDagreLayout(
           layerNodes,
-          graph.edges,
+          layoutEdges,
           dir,
           nextNodesLayout
         );
@@ -485,33 +557,90 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           const prev = nextNodesLayout[id] ?? {
             x: pos.x,
             y: pos.y,
-            width: 240,
-            height: 110,
+            width: 260,
+            height: 136,
           };
           nextNodesLayout[id] = { ...prev, x: pos.x, y: pos.y };
         }
       } else {
-        const parentKeys = new Set<string | null>([null]);
+        // Bottom-up layout for Unified mode: lay out children first, then size containers, then lay out parents.
+        const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+        const depthOf = (id: string, seen = new Set<string>()): number => {
+          if (seen.has(id)) return 0;
+          seen.add(id);
+          const n = byId.get(id);
+          return n?.parent_id && byId.has(n.parent_id)
+            ? 1 + depthOf(n.parent_id, seen)
+            : 0;
+        };
+
+        const groupsByParent = new Map<string | null, BloxdNode[]>();
         for (const n of graph.nodes) {
-          parentKeys.add(n.parent_id ?? null);
+          const key = n.parent_id ?? null;
+          const list = groupsByParent.get(key) ?? [];
+          list.push(n);
+          groupsByParent.set(key, list);
         }
+
+        const parentKeys = [...groupsByParent.keys()].sort((a, b) => {
+          const da = a === null ? -1 : depthOf(a);
+          const db = b === null ? -1 : depthOf(b);
+          return db - da;
+        });
+
         for (const parentKey of parentKeys) {
-          const layerNodes = graph.nodes.filter(
-            (n) => (n.parent_id ?? null) === parentKey
-          );
+          const layerNodes = groupsByParent.get(parentKey) ?? [];
           if (layerNodes.length === 0) continue;
-          const positions = computeDagreLayout(
-            layerNodes,
-            graph.edges,
-            dir,
+
+          const containerSizes = computeUnifiedContainerSizes(
+            graph.nodes,
             nextNodesLayout
           );
+          const marginTop = parentKey === null ? 50 : 112;
+          let edgesForLayer: BloxdEdge[] = graph.edges;
+          if (parentKey === null) {
+            // Roll up cross-layer edges onto root containers so Unified mode arranges them in a clean 2D flow
+            const rootIds = new Set(layerNodes.map((n) => n.id));
+            const findRoot = (id: string): string | null => {
+              let cur: string | undefined | null = id;
+              const seen = new Set<string>();
+              while (cur && !seen.has(cur)) {
+                if (rootIds.has(cur)) return cur;
+                seen.add(cur);
+                cur = byId.get(cur)?.parent_id;
+              }
+              return null;
+            };
+            edgesForLayer = [...graph.edges];
+            for (const e of graph.edges) {
+              const src = findRoot(e.source);
+              const dst = findRoot(e.target);
+              if (src && dst && src !== dst) {
+                edgesForLayer.push({
+                  id: `virt-root-${src}-${dst}`,
+                  source: src,
+                  target: dst,
+                  label: null,
+                  kind: e.kind,
+                });
+              }
+            }
+          }
+          const positions = computeDagreLayout(
+            layerNodes,
+            edgesForLayer,
+            dir,
+            nextNodesLayout,
+            containerSizes,
+            marginTop
+          );
+
           for (const [id, pos] of Object.entries(positions)) {
             const prev = nextNodesLayout[id] ?? {
               x: pos.x,
               y: pos.y,
-              width: 240,
-              height: 110,
+              width: 260,
+              height: 136,
             };
             nextNodesLayout[id] = { ...prev, x: pos.x, y: pos.y };
           }

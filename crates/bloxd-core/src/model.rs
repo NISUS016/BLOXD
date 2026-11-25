@@ -127,6 +127,13 @@ pub struct Viewport {
     pub zoom: f64,
 }
 
+/// Optional user-dragged offset for an edge label pill in `.bloxd/layout.json`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct LabelOffset {
+    pub x: f64,
+    pub y: f64,
+}
+
 /// Visual-only layout state stored in `.bloxd/layout.json` (ignored by coding agents).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct Layout {
@@ -135,6 +142,8 @@ pub struct Layout {
     pub nodes: BTreeMap<String, NodeLayout>,
     #[serde(default)]
     pub viewports: BTreeMap<String, Viewport>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub edge_labels: BTreeMap<String, LabelOffset>,
 }
 
 impl Default for Layout {
@@ -152,6 +161,7 @@ impl Default for Layout {
             version: 1,
             nodes: BTreeMap::new(),
             viewports,
+            edge_labels: BTreeMap::new(),
         }
     }
 }

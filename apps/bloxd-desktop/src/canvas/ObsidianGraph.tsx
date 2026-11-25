@@ -5,6 +5,8 @@ import {
   forceLink,
   forceManyBody,
   forceSimulation,
+  forceX,
+  forceY,
   Simulation,
   SimulationLinkDatum,
   SimulationNodeDatum,
@@ -43,14 +45,14 @@ const KIND_COLORS: Record<NodeKind, string> = {
 };
 
 export function ObsidianGraph() {
-  const { graph, selectedNodeId, setSelection, jumpToNode } = useProjectStore();
+  const { graph, selectedNodeId, setSelection, openInspector } = useProjectStore();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const [colorMode, setColorMode] = useState<ColorMode>("status");
   const [showHierarchy, setShowHierarchy] = useState(true);
+  const [gravity, setGravity] = useState(0.08);
 
-  // Mutable simulation & camera refs so 60-120fps render loop never re-mounts on hover/pan
   const simRef = useRef<Simulation<SimNode, SimLink> | null>(null);
   const nodesRef = useRef<SimNode[]>([]);
   const linksRef = useRef<SimLink[]>([]);
@@ -63,9 +65,24 @@ export function ObsidianGraph() {
   const lastPointerRef = useRef({ x: 0, y: 0 });
   const colorModeRef = useRef<ColorMode>(colorMode);
   const selectedIdRef = useRef<string | null>(selectedNodeId);
+  const gravityRef = useRef<number>(gravity);
 
   colorModeRef.current = colorMode;
   selectedIdRef.current = selectedNodeId;
+  gravityRef.current = gravity;
+
+  const triggerFormationAnimation = () => {
+    const sim = simRef.current;
+    if (!sim) return;
+    nodesRef.current.forEach((n, idx) => {
+      const angle = (idx / Math.max(1, nodesRef.current.length)) * Math.PI * 2;
+      n.x = Math.cos(angle) * 18;
+      n.y = Math.sin(angle) * 18;
+      n.vx = Math.cos(angle) * 2.5;
+      n.vy = Math.sin(angle) * 2.5;
+    });
+    sim.alpha(1).restart();
+  };
 
   // Build / reconcile force simulation whenever graph or showHierarchy changes
   useEffect(() => {
@@ -89,6 +106,7 @@ export function ObsidianGraph() {
       }
     }
 
+    const isInitialFormation = prevPos.size === 0;
     const simNodes: SimNode[] = graph.nodes.map((n, idx) => {
       const degree = degreeMap.get(n.id) ?? 0;
       const old = prevPos.get(n.id);
@@ -98,10 +116,11 @@ export function ObsidianGraph() {
         model: n,
         degree,
         radius: 7 + Math.min(12, degree * 1.4),
-        x: old?.x ?? Math.cos(angle) * 140,
-        y: old?.y ?? Math.sin(angle) * 140,
-        vx: old?.vx ?? 0,
-        vy: old?.vy ?? 0,
+        // Start clustered near origin on initial mount for a smooth bloom/formation animation
+        x: old?.x ?? Math.cos(angle) * 20,
+        y: old?.y ?? Math.sin(angle) * 20,
+        vx: old?.vx ?? (isInitialFormation ? Math.cos(angle) * 2.5 : 0),
+        vy: old?.vy ?? (isInitialFormation ? Math.sin(angle) * 2.5 : 0),
       };
     });
 
@@ -154,18 +173,29 @@ export function ObsidianGraph() {
           .strength((d) => (d.isHierarchy ? 0.55 : 0.35))
       )
       .force("charge", forceManyBody<SimNode>().strength(-260))
+      .force("x", forceX<SimNode>(0).strength(gravityRef.current))
+      .force("y", forceY<SimNode>(0).strength(gravityRef.current))
       .force("center", forceCenter(0, 0))
       .force(
         "collide",
         forceCollide<SimNode>().radius((d) => d.radius + 14)
       )
-      .alphaDecay(0.03);
+      .alphaDecay(0.018);
 
     simRef.current = sim;
     return () => {
       sim.stop();
     };
   }, [graph, showHierarchy]);
+
+  // Live-update gravity strength when slider moves
+  useEffect(() => {
+    const sim = simRef.current;
+    if (!sim) return;
+    sim.force("x", forceX<SimNode>(0).strength(gravity));
+    sim.force("y", forceY<SimNode>(0).strength(gravity));
+    sim.alpha(0.35).restart();
+  }, [gravity]);
 
   // High-DPI canvas resize + animation render loop
   useEffect(() => {
@@ -207,7 +237,6 @@ export function ObsidianGraph() {
         ctx.fillStyle = "#020617";
         ctx.fillRect(0, 0, width, height);
 
-        // World transform centered at viewport center
         ctx.translate(width / 2 + cam.x, height / 2 + cam.y);
         ctx.scale(cam.k, cam.k);
 
@@ -261,7 +290,6 @@ export function ObsidianGraph() {
           ctx.save();
           ctx.globalAlpha = dimmed ? 0.15 : 1;
 
-          // Subtle glow for focused/selected node
           if (isFocus || selectedId === n.id) {
             ctx.beginPath();
             ctx.arc(n.x, n.y, n.radius + 5, 0, Math.PI * 2);
@@ -277,7 +305,6 @@ export function ObsidianGraph() {
           ctx.strokeStyle = selectedId === n.id ? "#f8fafc" : "#0f172a";
           ctx.stroke();
 
-          // Show labels when zoomed in or focused/neighbor
           if (cam.k > 0.7 || isFocus || isNeighbor) {
             const fontSize = Math.max(10, Math.min(13, 12 / Math.sqrt(cam.k)));
             ctx.font = `${isFocus ? "600" : "500"} ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
@@ -411,13 +438,13 @@ export function ObsidianGraph() {
           const world = screenToWorld(e.clientX, e.clientY);
           const hit = hitTestNode(world.x, world.y);
           if (hit) {
-            jumpToNode(hit.id);
+            openInspector(hit.id);
           }
         }}
       />
 
       {/* Floating Graph Controls */}
-      <div className="pointer-events-auto absolute left-4 top-4 flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/90 px-3 py-1.5 text-xs shadow-xl backdrop-blur-sm">
+      <div className="pointer-events-auto absolute left-4 top-4 flex flex-wrap items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/90 px-3 py-1.5 text-xs shadow-xl backdrop-blur-sm">
         <span className="text-slate-400">Color:</span>
         <button
           type="button"
@@ -454,6 +481,34 @@ export function ObsidianGraph() {
           }`}
         >
           Hierarchy {showHierarchy ? "On" : "Off"}
+        </button>
+
+        <span className="mx-1 h-3.5 w-px bg-slate-800" />
+
+        <label className="flex items-center gap-2 text-slate-400">
+          <span>Gravity</span>
+          <input
+            type="range"
+            min={0.01}
+            max={0.45}
+            step={0.01}
+            value={gravity}
+            onChange={(e) => setGravity(parseFloat(e.target.value))}
+            className="h-1.5 w-20 cursor-pointer accent-blue-500"
+          />
+          <span className="w-7 font-mono text-[10px] text-slate-300">
+            {gravity.toFixed(2)}
+          </span>
+        </label>
+
+        <span className="mx-1 h-3.5 w-px bg-slate-800" />
+
+        <button
+          type="button"
+          onClick={triggerFormationAnimation}
+          className="cursor-pointer rounded px-2 py-0.5 text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+        >
+          Replay
         </button>
 
         <button

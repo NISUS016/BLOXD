@@ -37,15 +37,15 @@ const STATUSES: { value: Status; label: string; activeClass: string }[] = [
 export function NodeInspector() {
   const {
     graph,
-    selectedNodeId,
-    viewMode,
-    setSelection,
+    inspectedNodeId,
+    openInspector,
     updateNode,
+    setViewMode,
     setCurrentParentId,
     copyNodeContext,
   } = useProjectStore();
 
-  const node = graph?.nodes.find((n) => n.id === selectedNodeId) ?? null;
+  const node = graph?.nodes.find((n) => n.id === inspectedNodeId) ?? null;
 
   const [spec, setSpec] = useState("");
   const [specLoading, setSpecLoading] = useState(false);
@@ -53,14 +53,14 @@ export function NodeInspector() {
   const specSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (!selectedNodeId) {
+    if (!inspectedNodeId) {
       setSpec("");
       return;
     }
     let cancelled = false;
     setSpecLoading(true);
     commands
-      .readNodeSpec(selectedNodeId)
+      .readNodeSpec(inspectedNodeId)
       .then((content) => {
         if (!cancelled) {
           setSpec(content);
@@ -73,7 +73,7 @@ export function NodeInspector() {
     return () => {
       cancelled = true;
     };
-  }, [selectedNodeId]);
+  }, [inspectedNodeId]);
 
   if (!node) return null;
 
@@ -125,7 +125,7 @@ export function NodeInspector() {
           </button>
           <button
             type="button"
-            onClick={() => setSelection(null, null)}
+            onClick={() => openInspector(null)}
             className="cursor-pointer rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200"
           >
             ✕
@@ -162,17 +162,18 @@ export function NodeInspector() {
             </select>
           </div>
 
-          {viewMode === "nested" && (
-            <div className="flex items-end">
-              <button
-                type="button"
-                onClick={() => setCurrentParentId(node.id)}
-                className="w-full cursor-pointer rounded-md border border-slate-700 bg-slate-800/80 px-2.5 py-1.5 text-xs font-medium text-blue-300 transition hover:bg-slate-800"
-              >
-                Open Layer →
-              </button>
-            </div>
-          )}
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode("nested");
+                setCurrentParentId(node.id);
+              }}
+              className="w-full cursor-pointer rounded-md border border-slate-700 bg-slate-800/80 px-2.5 py-1.5 text-xs font-medium text-blue-300 transition hover:bg-slate-800"
+            >
+              Open Layer →
+            </button>
+          </div>
         </div>
 
         <div>

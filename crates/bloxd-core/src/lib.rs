@@ -5,7 +5,8 @@ pub mod storage;
 pub mod watcher;
 
 pub use model::{
-    Edge, EdgeKind, Graph, Layout, Node, NodeKind, NodeLayout, ProjectSnapshot, Status, Viewport,
+    Edge, EdgeKind, Graph, LabelOffset, Layout, Node, NodeKind, NodeLayout, ProjectSnapshot,
+    Status, Viewport,
 };
 pub use storage::{
     auto_place_missing_nodes, init_or_open_project, load_graph, load_layout, read_node_spec,
