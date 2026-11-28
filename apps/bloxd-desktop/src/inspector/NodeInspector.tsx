@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { commands, NodeKind, Status } from "../bindings";
 import { useProjectStore } from "../store/useProjectStore";
 
@@ -34,14 +34,39 @@ const STATUSES: { value: Status; label: string; activeClass: string }[] = [
   },
 ];
 
+interface ChecklistItem {
+  lineIndex: number;
+  done: boolean;
+  text: string;
+}
+
+function parseChecklistItems(markdown: string): ChecklistItem[] {
+  const items: ChecklistItem[] = [];
+  const lines = markdown.split(/\r?\n/);
+  lines.forEach((line, idx) => {
+    const t = line.trimStart();
+    const rest = t.startsWith("- ") ? t.slice(2) : t.startsWith("* ") ? t.slice(2) : null;
+    if (!rest) return;
+    if (rest.startsWith("[ ] ")) {
+      items.push({ lineIndex: idx, done: false, text: rest.slice(4) });
+    } else if (rest.startsWith("[x] ") || rest.startsWith("[X] ")) {
+      items.push({ lineIndex: idx, done: true, text: rest.slice(4) });
+    }
+  });
+  return items;
+}
+
 export function NodeInspector() {
   const {
     graph,
+    drift,
     inspectedNodeId,
     openInspector,
     updateNode,
     setViewMode,
     setCurrentParentId,
+    updateSpecChecklist,
+    markSynced,
     copyNodeContext,
   } = useProjectStore();
 
@@ -50,6 +75,7 @@ export function NodeInspector() {
   const [spec, setSpec] = useState("");
   const [specLoading, setSpecLoading] = useState(false);
   const [newFile, setNewFile] = useState("");
+  const [newConstraint, setNewConstraint] = useState("");
   const specSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -64,6 +90,7 @@ export function NodeInspector() {
       .then((content) => {
         if (!cancelled) {
           setSpec(content);
+          updateSpecChecklist(inspectedNodeId, content);
           setSpecLoading(false);
         }
       })
@@ -73,17 +100,36 @@ export function NodeInspector() {
     return () => {
       cancelled = true;
     };
-  }, [inspectedNodeId]);
+  }, [inspectedNodeId, updateSpecChecklist]);
+
+  const checklistItems = useMemo(() => parseChecklistItems(spec), [spec]);
 
   if (!node) return null;
+
+  const driftedFiles = drift?.drifted?.[node.id] ?? [];
 
   const handleSpecChange = (value: string) => {
     setSpec(value);
     const id = node.id;
+    updateSpecChecklist(id, value);
     if (specSaveTimerRef.current) clearTimeout(specSaveTimerRef.current);
     specSaveTimerRef.current = setTimeout(() => {
       commands.writeNodeSpec(id, value).catch(() => {});
     }, 350);
+  };
+
+  const handleToggleChecklist = (lineIndex: number) => {
+    const lines = spec.split(/\r?\n/);
+    const line = lines[lineIndex];
+    if (!line) return;
+    if (line.includes("[ ] ")) {
+      lines[lineIndex] = line.replace("[ ] ", "[x] ");
+    } else if (line.includes("[x] ")) {
+      lines[lineIndex] = line.replace("[x] ", "[ ] ");
+    } else if (line.includes("[X] ")) {
+      lines[lineIndex] = line.replace("[X] ", "[ ] ");
+    }
+    handleSpecChange(lines.join("\n"));
   };
 
   const handleAddLinkedFile = () => {
@@ -100,6 +146,25 @@ export function NodeInspector() {
   const handleRemoveLinkedFile = (file: string) => {
     updateNode(node.id, {
       linked_files: node.linked_files.filter((f) => f !== file),
+    });
+  };
+
+  const constraints = node.constraints ?? [];
+
+  const handleAddConstraint = () => {
+    const trimmed = newConstraint.trim();
+    if (!trimmed) return;
+    if (!constraints.includes(trimmed)) {
+      updateNode(node.id, {
+        constraints: [...constraints, trimmed],
+      });
+    }
+    setNewConstraint("");
+  };
+
+  const handleRemoveConstraint = (item: string) => {
+    updateNode(node.id, {
+      constraints: constraints.filter((c) => c !== item),
     });
   };
 
@@ -134,6 +199,28 @@ export function NodeInspector() {
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto p-4 text-xs">
+        {driftedFiles.length > 0 && (
+          <div className="rounded-lg border border-amber-500/40 bg-amber-950/40 p-2.5 text-amber-200">
+            <div className="flex items-center justify-between font-semibold">
+              <span>Δ {driftedFiles.length} linked file(s) drifted</span>
+              <button
+                type="button"
+                onClick={() => markSynced([node.id])}
+                className="cursor-pointer rounded bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-200 hover:bg-amber-500/30"
+              >
+                Mark Synced
+              </button>
+            </div>
+            <ul className="mt-1 space-y-0.5 font-mono text-[10px] text-amber-300/90">
+              {driftedFiles.map((f) => (
+                <li key={f} className="truncate">
+                  {f}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         <div>
           <label className="mb-1 block font-medium text-slate-300">Title</label>
           <input
@@ -216,6 +303,53 @@ export function NodeInspector() {
 
         <div>
           <label className="mb-1 block font-medium text-slate-300">
+            Constraints / ADRs
+          </label>
+          <div className="flex gap-1.5">
+            <input
+              type="text"
+              value={newConstraint}
+              onChange={(e) => setNewConstraint(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleAddConstraint();
+                }
+              }}
+              placeholder="e.g. Must use atomic writes on Windows"
+              className="flex-1 rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1 text-xs text-slate-100 outline-none focus:border-blue-500"
+            />
+            <button
+              type="button"
+              onClick={handleAddConstraint}
+              className="cursor-pointer rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs text-slate-200 hover:bg-slate-700"
+            >
+              Add
+            </button>
+          </div>
+          {constraints.length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {constraints.map((c) => (
+                <li
+                  key={c}
+                  className="flex items-start justify-between gap-2 rounded bg-amber-950/30 px-2 py-1 text-[11px] text-amber-200 ring-1 ring-amber-500/20"
+                >
+                  <span>⚑ {c}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveConstraint(c)}
+                    className="cursor-pointer text-slate-500 hover:text-rose-400"
+                  >
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div>
+          <label className="mb-1 block font-medium text-slate-300">
             Linked Files
           </label>
           <div className="flex gap-1.5">
@@ -261,6 +395,33 @@ export function NodeInspector() {
           )}
         </div>
 
+        {checklistItems.length > 0 && (
+          <div>
+            <label className="mb-1.5 block font-medium text-slate-300">
+              Spec Checklist ({checklistItems.filter((i) => i.done).length}/
+              {checklistItems.length})
+            </label>
+            <div className="space-y-1 rounded-md border border-slate-800 bg-slate-950/60 p-2">
+              {checklistItems.map((item) => (
+                <label
+                  key={item.lineIndex}
+                  className="flex cursor-pointer items-start gap-2 text-[11px] text-slate-200"
+                >
+                  <input
+                    type="checkbox"
+                    checked={item.done}
+                    onChange={() => handleToggleChecklist(item.lineIndex)}
+                    className="mt-0.5 accent-emerald-500"
+                  />
+                  <span className={item.done ? "text-slate-500 line-through" : ""}>
+                    {item.text}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-col">
           <div className="mb-1 flex items-center justify-between">
             <label className="font-medium text-slate-300">
@@ -271,10 +432,10 @@ export function NodeInspector() {
             )}
           </div>
           <textarea
-            rows={9}
+            rows={8}
             value={spec}
             onChange={(e) => handleSpecChange(e.target.value)}
-            placeholder="# Specification&#10;&#10;Acceptance criteria, edge cases, and agent instructions..."
+            placeholder="# Specification&#10;&#10;- [ ] First task&#10;- [x] Done task"
             className="w-full rounded-md border border-slate-700 bg-slate-950 p-2.5 font-mono text-xs leading-relaxed text-slate-100 outline-none focus:border-blue-500"
           />
         </div>

@@ -1,9 +1,14 @@
-use bloxd_core::context::compile_node_context;
+use bloxd_core::context::{compile_multi_node_context, compile_node_context};
+use bloxd_core::drift::{
+    check_git_drift as core_check_git_drift, export_drift_sync_prompt as core_export_drift_sync,
+    mark_nodes_synced as core_mark_nodes_synced,
+};
 use bloxd_core::{
-    auto_place_missing_nodes, init_or_open_project, load_graph, load_graph_with_retry,
-    load_layout, read_node_spec as core_read_node_spec, save_graph as core_save_graph,
-    save_layout as core_save_layout, write_node_spec as core_write_node_spec, Graph, Layout,
-    ProjectSnapshot, ProjectWatcher,
+    auto_place_missing_nodes, compute_project_checklists, init_or_open_project, load_graph,
+    load_graph_with_retry, load_layout, read_node_spec as core_read_node_spec,
+    save_graph as core_save_graph, save_layout as core_save_layout,
+    write_node_spec as core_write_node_spec, DriftReport, Graph, Layout, ProjectSnapshot,
+    ProjectWatcher,
 };
 use specta_typescript::Typescript;
 use std::path::PathBuf;
@@ -100,10 +105,12 @@ fn open_project(
                 if auto_place_missing_nodes(&graph, &mut layout) {
                     let _ = core_save_layout(&watch_dir, &layout);
                 }
+                let checklists = compute_project_checklists(&watch_dir, &graph);
                 let payload = ProjectSnapshot {
                     project_path: watch_dir.to_string_lossy().into_owned(),
                     graph,
                     layout,
+                    checklists,
                 };
                 let _ = app_handle.emit("bloxd://graph-updated", payload);
             }
@@ -158,6 +165,48 @@ fn export_node_context(node_id: String, state: State<'_, AppState>) -> Result<St
     compile_node_context(&dir, &graph, &node_id).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+#[specta::specta]
+fn export_multi_node_context(
+    node_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let dir = current_project_dir(&state)?;
+    let graph = load_graph(&dir).map_err(|e| e.to_string())?;
+    compile_multi_node_context(&dir, &graph, &node_ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn check_git_drift(state: State<'_, AppState>) -> Result<DriftReport, String> {
+    let dir = current_project_dir(&state)?;
+    let graph = load_graph(&dir).map_err(|e| e.to_string())?;
+    Ok(core_check_git_drift(&dir, &graph))
+}
+
+#[tauri::command]
+#[specta::specta]
+fn mark_nodes_synced(
+    node_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let dir = current_project_dir(&state)?;
+    let mut graph = load_graph(&dir).map_err(|e| e.to_string())?;
+    mark_internal_write(&state);
+    core_mark_nodes_synced(&dir, &mut graph, &node_ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn export_drift_sync_prompt(
+    node_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let dir = current_project_dir(&state)?;
+    let graph = load_graph(&dir).map_err(|e| e.to_string())?;
+    core_export_drift_sync(&dir, &graph, &node_ids).map_err(|e| e.to_string())
+}
+
 fn parse_open_arg() -> Option<String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -181,6 +230,10 @@ pub fn run() {
         read_node_spec,
         write_node_spec,
         export_node_context,
+        export_multi_node_context,
+        check_git_drift,
+        mark_nodes_synced,
+        export_drift_sync_prompt,
     ]);
 
     #[cfg(debug_assertions)]

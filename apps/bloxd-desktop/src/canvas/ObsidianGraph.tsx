@@ -52,6 +52,10 @@ export function ObsidianGraph() {
   const [colorMode, setColorMode] = useState<ColorMode>("status");
   const [showHierarchy, setShowHierarchy] = useState(true);
   const [gravity, setGravity] = useState(0.08);
+  const [timelapseProgress, setTimelapseProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
 
   const simRef = useRef<Simulation<SimNode, SimLink> | null>(null);
   const nodesRef = useRef<SimNode[]>([]);
@@ -66,23 +70,74 @@ export function ObsidianGraph() {
   const colorModeRef = useRef<ColorMode>(colorMode);
   const selectedIdRef = useRef<string | null>(selectedNodeId);
   const gravityRef = useRef<number>(gravity);
+  const revealedIdsRef = useRef<Set<string> | null>(null);
+  const timelapseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   colorModeRef.current = colorMode;
   selectedIdRef.current = selectedNodeId;
   gravityRef.current = gravity;
 
-  const triggerFormationAnimation = () => {
-    const sim = simRef.current;
-    if (!sim) return;
-    nodesRef.current.forEach((n, idx) => {
-      const angle = (idx / Math.max(1, nodesRef.current.length)) * Math.PI * 2;
-      n.x = Math.cos(angle) * 18;
-      n.y = Math.sin(angle) * 18;
-      n.vx = Math.cos(angle) * 2.5;
-      n.vy = Math.sin(angle) * 2.5;
-    });
-    sim.alpha(1).restart();
+  const stopTimelapse = () => {
+    if (timelapseTimerRef.current) {
+      clearInterval(timelapseTimerRef.current);
+      timelapseTimerRef.current = null;
+    }
+    revealedIdsRef.current = null;
+    setTimelapseProgress(null);
   };
+
+  const triggerTimelapse = () => {
+    const sim = simRef.current;
+    if (!sim || nodesRef.current.length === 0) return;
+
+    stopTimelapse();
+
+    // Order nodes chronologically for timelapse: root hubs first (highest degree), then children
+    const ordered = [...nodesRef.current].sort((a, b) => {
+      const aRoot = a.model.parent_id ? 1 : 0;
+      const bRoot = b.model.parent_id ? 1 : 0;
+      if (aRoot !== bRoot) return aRoot - bRoot;
+      return b.degree - a.degree;
+    });
+
+    const nodeById = new Map(nodesRef.current.map((n) => [n.id, n]));
+    const revealed = new Set<string>([ordered[0].id]);
+    ordered[0].x = 0;
+    ordered[0].y = 0;
+    ordered[0].vx = 0;
+    ordered[0].vy = 0;
+    revealedIdsRef.current = revealed;
+    setTimelapseProgress({ current: 1, total: ordered.length });
+    sim.alpha(0.6).restart();
+
+    let idx = 1;
+    timelapseTimerRef.current = setInterval(() => {
+      if (idx >= ordered.length) {
+        stopTimelapse();
+        return;
+      }
+      const next = ordered[idx];
+      const parent = next.model.parent_id
+        ? nodeById.get(next.model.parent_id)
+        : null;
+      const angle = idx * 2.39996; // golden angle spread
+      next.x = (parent?.x ?? 0) + Math.cos(angle) * 36;
+      next.y = (parent?.y ?? 0) + Math.sin(angle) * 36;
+      next.vx = Math.cos(angle) * 1.8;
+      next.vy = Math.sin(angle) * 1.8;
+
+      revealed.add(next.id);
+      idx += 1;
+      setTimelapseProgress({ current: idx, total: ordered.length });
+      sim.alpha(0.45).restart();
+    }, 220);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (timelapseTimerRef.current) clearInterval(timelapseTimerRef.current);
+    };
+  }, []);
 
   // Build / reconcile force simulation whenever graph or showHierarchy changes
   useEffect(() => {
@@ -106,7 +161,6 @@ export function ObsidianGraph() {
       }
     }
 
-    const isInitialFormation = prevPos.size === 0;
     const simNodes: SimNode[] = graph.nodes.map((n, idx) => {
       const degree = degreeMap.get(n.id) ?? 0;
       const old = prevPos.get(n.id);
@@ -116,11 +170,10 @@ export function ObsidianGraph() {
         model: n,
         degree,
         radius: 7 + Math.min(12, degree * 1.4),
-        // Start clustered near origin on initial mount for a smooth bloom/formation animation
         x: old?.x ?? Math.cos(angle) * 20,
         y: old?.y ?? Math.sin(angle) * 20,
-        vx: old?.vx ?? (isInitialFormation ? Math.cos(angle) * 2.5 : 0),
-        vy: old?.vy ?? (isInitialFormation ? Math.sin(angle) * 2.5 : 0),
+        vx: old?.vx ?? 0,
+        vy: old?.vy ?? 0,
       };
     });
 
@@ -231,6 +284,7 @@ export function ObsidianGraph() {
         const selectedId = selectedIdRef.current;
         const focusId = hoveredId ?? selectedId;
         const focusNeighbors = focusId ? neighborsRef.current.get(focusId) : null;
+        const revealed = revealedIdsRef.current;
 
         ctx.save();
         ctx.scale(dpr, dpr);
@@ -245,6 +299,9 @@ export function ObsidianGraph() {
           const s = link.source as SimNode;
           const t = link.target as SimNode;
           if (s.x === undefined || s.y === undefined || t.x === undefined || t.y === undefined) {
+            continue;
+          }
+          if (revealed && (!revealed.has(s.id) || !revealed.has(t.id))) {
             continue;
           }
 
@@ -278,6 +335,8 @@ export function ObsidianGraph() {
         // Draw nodes
         for (const n of nodesRef.current) {
           if (n.x === undefined || n.y === undefined) continue;
+          if (revealed && !revealed.has(n.id)) continue;
+
           const isFocus = focusId === n.id;
           const isNeighbor = focusNeighbors?.has(n.id) ?? false;
           const dimmed = focusId !== null && !isFocus && !isNeighbor;
@@ -305,7 +364,7 @@ export function ObsidianGraph() {
           ctx.strokeStyle = selectedId === n.id ? "#f8fafc" : "#0f172a";
           ctx.stroke();
 
-          if (cam.k > 0.7 || isFocus || isNeighbor) {
+          if (cam.k > 0.7 || isFocus || isNeighbor || revealed !== null) {
             const fontSize = Math.max(10, Math.min(13, 12 / Math.sqrt(cam.k)));
             ctx.font = `${isFocus ? "600" : "500"} ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
             ctx.textAlign = "center";
@@ -340,9 +399,11 @@ export function ObsidianGraph() {
   };
 
   const hitTestNode = (wx: number, wy: number): SimNode | null => {
+    const revealed = revealedIdsRef.current;
     for (let i = nodesRef.current.length - 1; i >= 0; i--) {
       const n = nodesRef.current[i];
       if (n.x === undefined || n.y === undefined) continue;
+      if (revealed && !revealed.has(n.id)) continue;
       const dx = wx - n.x;
       const dy = wy - n.y;
       if (dx * dx + dy * dy <= (n.radius + 6) * (n.radius + 6)) {
@@ -503,13 +564,23 @@ export function ObsidianGraph() {
 
         <span className="mx-1 h-3.5 w-px bg-slate-800" />
 
-        <button
-          type="button"
-          onClick={triggerFormationAnimation}
-          className="cursor-pointer rounded px-2 py-0.5 text-slate-300 hover:bg-slate-800 hover:text-slate-100"
-        >
-          Replay
-        </button>
+        {timelapseProgress ? (
+          <button
+            type="button"
+            onClick={stopTimelapse}
+            className="cursor-pointer rounded bg-violet-500/20 px-2 py-0.5 font-medium text-violet-300 hover:bg-violet-500/30"
+          >
+            Building {timelapseProgress.current}/{timelapseProgress.total} · Show All
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={triggerTimelapse}
+            className="cursor-pointer rounded px-2 py-0.5 text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+          >
+            Replay Timelapse
+          </button>
+        )}
 
         <button
           type="button"

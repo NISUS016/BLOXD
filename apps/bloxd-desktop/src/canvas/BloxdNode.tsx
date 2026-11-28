@@ -1,6 +1,11 @@
 import { memo, useState } from "react";
-import { Handle, NodeProps, Position } from "@xyflow/react";
-import { BloxdNode as BloxdNodeModel, NodeKind, Status } from "../bindings";
+import { Handle, NodeProps, NodeResizer, Position } from "@xyflow/react";
+import {
+  BloxdNode as BloxdNodeModel,
+  ChecklistProgress,
+  NodeKind,
+  Status,
+} from "../bindings";
 
 export interface ExternalEdgeRef {
   edgeId: string;
@@ -14,11 +19,17 @@ export interface BloxdFlowNodeData extends Record<string, unknown> {
   model: BloxdNodeModel;
   childCount: number;
   doneCount: number;
+  checklist?: ChecklistProgress;
+  driftCount?: number;
   isGroupContainer?: boolean;
   externalIn?: ExternalEdgeRef[];
   externalOut?: ExternalEdgeRef[];
   onOpenLayer?: (nodeId: string) => void;
   onJumpToNode?: (nodeId: string) => void;
+  onResizeNode?: (
+    nodeId: string,
+    rect: { x: number; y: number; width: number; height: number }
+  ) => void;
 }
 
 const STATUS_STYLES: Record<
@@ -90,20 +101,39 @@ export const BloxdNode = memo(function BloxdNode({
     model,
     childCount,
     doneCount,
+    checklist,
+    driftCount = 0,
     isGroupContainer,
     externalIn = [],
     externalOut = [],
     onOpenLayer,
     onJumpToNode,
+    onResizeNode,
   } = data as BloxdFlowNodeData;
   const statusStyle = STATUS_STYLES[model.status] ?? STATUS_STYLES.planned;
   const kindStyle = KIND_STYLES[model.kind] ?? KIND_STYLES.module;
   const [popoverKind, setPopoverKind] = useState<"in" | "out" | null>(null);
 
   const activeList = popoverKind === "in" ? externalIn : externalOut;
+  const constraintCount = model.constraints?.length ?? 0;
 
   return (
     <div className="group relative h-full w-full">
+      <NodeResizer
+        minWidth={200}
+        minHeight={100}
+        isVisible={selected}
+        lineClassName="!border-blue-500/60"
+        handleClassName="!h-2.5 !w-2.5 !rounded-xs !border !border-slate-950 !bg-blue-400"
+        onResizeEnd={(_, params) =>
+          onResizeNode?.(model.id, {
+            x: Math.round(params.x),
+            y: Math.round(params.y),
+            width: Math.round(params.width),
+            height: Math.round(params.height),
+          })
+        }
+      />
       {/* 4-sided connection handles (works with ConnectionMode.Loose) */}
       <Handle id="top" type="source" position={Position.Top} className={HANDLE_CLASS} />
       <Handle id="right" type="source" position={Position.Right} className={HANDLE_CLASS} />
@@ -122,12 +152,22 @@ export const BloxdNode = memo(function BloxdNode({
         <div className={`absolute inset-x-0 top-0 h-0.5 ${kindStyle.accentBar}`} />
 
         {/* Header row */}
-        <div className="flex min-w-0 shrink-0 items-center justify-between gap-2 pt-0.5">
-          <span
-            className={`truncate rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider ${kindStyle.badge}`}
-          >
-            {model.kind.replace("_", " ")}
-          </span>
+        <div className="flex min-w-0 shrink-0 items-center justify-between gap-1.5 pt-0.5">
+          <div className="flex min-w-0 items-center gap-1">
+            <span
+              className={`truncate rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider ${kindStyle.badge}`}
+            >
+              {model.kind.replace("_", " ")}
+            </span>
+            {driftCount > 0 && (
+              <span
+                title={`${driftCount} linked file(s) changed since last sync`}
+                className="shrink-0 rounded bg-amber-500/20 px-1 py-0.5 font-mono text-[10px] font-semibold text-amber-300 ring-1 ring-amber-500/40"
+              >
+                Δ {driftCount}
+              </span>
+            )}
+          </div>
           <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-slate-400">
             <span className={`h-2 w-2 rounded-full ${statusStyle.dot}`} />
             {statusStyle.label}
@@ -193,12 +233,35 @@ export const BloxdNode = memo(function BloxdNode({
                 ↗ {externalOut.length}
               </button>
             )}
-            {externalIn.length === 0 && externalOut.length === 0 && (
+            {externalIn.length === 0 &&
+              externalOut.length === 0 &&
+              (!checklist || checklist.total === 0) &&
+              constraintCount === 0 && (
+                <span
+                  title={model.id}
+                  className="truncate font-mono text-[10px] text-slate-500"
+                >
+                  {model.id}
+                </span>
+              )}
+            {checklist && checklist.total > 0 && (
               <span
-                title={model.id}
-                className="truncate font-mono text-[10px] text-slate-500"
+                title={`Spec checklist: ${checklist.done}/${checklist.total} done`}
+                className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] ${
+                  checklist.done === checklist.total
+                    ? "bg-emerald-500/15 text-emerald-300"
+                    : "bg-slate-800 text-slate-300"
+                }`}
               >
-                {model.id}
+                ☑ {checklist.done}/{checklist.total}
+              </span>
+            )}
+            {constraintCount > 0 && (
+              <span
+                title={`${constraintCount} architectural constraint(s)`}
+                className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-[10px] text-amber-300"
+              >
+                ⚑ {constraintCount}
               </span>
             )}
           </div>

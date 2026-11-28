@@ -12,3 +12,7 @@ apps/bloxd-desktop/src/bindings.generated.ts
 .DS_Store
 Thumbs.db
 *.log
+
+# Local planning docs
+bloxd_blueprint.md
+bloxd_v*_plan.md

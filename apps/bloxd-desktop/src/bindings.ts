@@ -13,6 +13,8 @@ export interface BloxdNode {
   summary: string;
   linked_files: string[];
   spec_file: string | null;
+  constraints?: string[];
+  synced_commit?: string | null;
 }
 
 export interface BloxdEdge {
@@ -27,6 +29,7 @@ export interface Graph {
   version: number;
   project: string;
   updated_at: string;
+  last_synced_commit?: string | null;
   nodes: BloxdNode[];
   edges: BloxdEdge[];
 }
@@ -57,10 +60,22 @@ export interface Layout {
   edge_labels?: Record<string, LabelOffset>;
 }
 
+export interface ChecklistProgress {
+  done: number;
+  total: number;
+}
+
+export interface DriftReport {
+  head_commit: string | null;
+  is_git_repo: boolean;
+  drifted: Record<string, string[]>;
+}
+
 export interface ProjectSnapshot {
   project_path: string;
   graph: Graph;
   layout: Layout;
+  checklists: Record<string, ChecklistProgress>;
 }
 
 export const commands = {
@@ -76,7 +91,7 @@ export const commands = {
   async saveLayout(layout: Layout): Promise<void> {
     return invoke<void>("save_layout", { layout });
   },
-  async readNodeSpec(nodeId: string): Promise<string> {
+  async readNodeSpec(nodeId: string): Promise<StringOrEmpty> {
     return invoke<string>("read_node_spec", { nodeId });
   },
   async writeNodeSpec(nodeId: string, content: string): Promise<void> {
@@ -85,4 +100,18 @@ export const commands = {
   async exportNodeContext(nodeId: string): Promise<string> {
     return invoke<string>("export_node_context", { nodeId });
   },
+  async exportMultiNodeContext(nodeIds: string[]): Promise<string> {
+    return invoke<string>("export_multi_node_context", { nodeIds });
+  },
+  async checkGitDrift(): Promise<DriftReport> {
+    return invoke<DriftReport>("check_git_drift");
+  },
+  async markNodesSynced(nodeIds: string[]): Promise<string | null> {
+    return invoke<string | null>("mark_nodes_synced", { nodeIds });
+  },
+  async exportDriftSyncPrompt(nodeIds: string[]): Promise<string> {
+    return invoke<string>("export_drift_sync_prompt", { nodeIds });
+  },
 };
+
+type StringOrEmpty = string;

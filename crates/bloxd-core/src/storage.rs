@@ -1,5 +1,6 @@
 use crate::agents_md::generate_agents_md;
-use crate::model::{Graph, Layout, NodeLayout, ProjectSnapshot};
+use crate::model::{ChecklistProgress, Graph, Layout, NodeLayout, ProjectSnapshot};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -103,10 +104,13 @@ pub fn init_or_open_project(project_dir: &Path) -> Result<ProjectSnapshot, Bloxd
         atomic_write(&agents_path, generate_agents_md().as_bytes())?;
     }
 
+    let checklists = compute_project_checklists(project_dir, &graph);
+
     Ok(ProjectSnapshot {
         project_path: project_dir.to_string_lossy().into_owned(),
         graph,
         layout,
+        checklists,
     })
 }
 
@@ -200,4 +204,48 @@ pub fn auto_place_missing_nodes(graph: &Graph, layout: &mut Layout) -> bool {
     }
 
     changed
+}
+
+/// Parses Markdown task list items (`- [ ] `, `- [x] `, `- [X] `) from `markdown`.
+pub fn parse_checklist_progress(markdown: &str) -> ChecklistProgress {
+    let mut done = 0u32;
+    let mut total = 0u32;
+
+    for line in markdown.lines() {
+        let trimmed = line.trim_start();
+        let rest = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "));
+        if let Some(body) = rest {
+            if body.starts_with("[ ] ") || body == "[ ]" {
+                total += 1;
+            } else if body.starts_with("[x] ")
+                || body.starts_with("[X] ")
+                || body == "[x]"
+                || body == "[X]"
+            {
+                total += 1;
+                done += 1;
+            }
+        }
+    }
+
+    ChecklistProgress { done, total }
+}
+
+/// Computes checklist progress for every node in `graph` that has task items in `specs/<id>.md`.
+pub fn compute_project_checklists(
+    project_dir: &Path,
+    graph: &Graph,
+) -> BTreeMap<String, ChecklistProgress> {
+    let mut map = BTreeMap::new();
+    for node in &graph.nodes {
+        if let Ok(spec) = read_node_spec(project_dir, &node.id) {
+            let progress = parse_checklist_progress(&spec);
+            if progress.total > 0 {
+                map.insert(node.id.clone(), progress);
+            }
+        }
+    }
+    map
 }

@@ -19,10 +19,15 @@ export function App() {
     loading,
     error,
     selectedNodeId,
+    selectedNodeIds,
     openProject,
     applyExternalSnapshot,
     ascendLayer,
-    copyNodeContext,
+    goBackLayer,
+    goForwardLayer,
+    undo,
+    redo,
+    copySelectedContext,
   } = useProjectStore();
   const [addNodeOpen, setAddNodeOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -52,7 +57,7 @@ export function App() {
     };
   }, [applyExternalSnapshot]);
 
-  // Global keyboard shortcuts (Ctrl+K, Ctrl+Shift+C, Backspace)
+  // Global keyboard & Mouse4/Mouse5 navigation shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -72,10 +77,36 @@ export function App() {
         (e.ctrlKey || e.metaKey) &&
         e.shiftKey &&
         e.key.toLowerCase() === "c" &&
-        selectedNodeId
+        (selectedNodeIds.length > 0 || selectedNodeId)
       ) {
         e.preventDefault();
-        copyNodeContext(selectedNodeId);
+        copySelectedContext();
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && !isTyping) {
+        const lower = e.key.toLowerCase();
+        if (lower === "z" && !e.shiftKey) {
+          e.preventDefault();
+          undo();
+          return;
+        }
+        if ((lower === "z" && e.shiftKey) || lower === "y") {
+          e.preventDefault();
+          redo();
+          return;
+        }
+      }
+
+      if (e.altKey && e.key === "ArrowLeft") {
+        e.preventDefault();
+        goBackLayer();
+        return;
+      }
+
+      if (e.altKey && e.key === "ArrowRight") {
+        e.preventDefault();
+        goForwardLayer();
         return;
       }
 
@@ -85,9 +116,45 @@ export function App() {
       }
     };
 
+    const blockSideButtonDefault = (e: MouseEvent) => {
+      if (e.button === 3 || e.button === 4) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+
+    const onMouseUp = (e: MouseEvent) => {
+      if (e.button === 3) {
+        e.preventDefault();
+        e.stopPropagation();
+        goBackLayer();
+      } else if (e.button === 4) {
+        e.preventDefault();
+        e.stopPropagation();
+        goForwardLayer();
+      }
+    };
+
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [ascendLayer, copyNodeContext, selectedNodeId]);
+    window.addEventListener("mousedown", blockSideButtonDefault, true);
+    window.addEventListener("auxclick", blockSideButtonDefault, true);
+    window.addEventListener("mouseup", onMouseUp, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("mousedown", blockSideButtonDefault, true);
+      window.removeEventListener("auxclick", blockSideButtonDefault, true);
+      window.removeEventListener("mouseup", onMouseUp, true);
+    };
+  }, [
+    ascendLayer,
+    copySelectedContext,
+    goBackLayer,
+    goForwardLayer,
+    redo,
+    selectedNodeId,
+    selectedNodeIds,
+    undo,
+  ]);
 
   const handleOpenFolder = async () => {
     const selected = await open({

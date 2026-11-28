@@ -69,6 +69,10 @@ pub struct Node {
     pub linked_files: Vec<String>,
     #[serde(default)]
     pub spec_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced_commit: Option<String>,
 }
 
 /// A directed edge connecting two nodes.
@@ -89,6 +93,8 @@ pub struct Graph {
     pub version: u32,
     pub project: String,
     pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_synced_commit: Option<String>,
     #[serde(default)]
     pub nodes: Vec<Node>,
     #[serde(default)]
@@ -102,6 +108,7 @@ impl Graph {
             version: 1,
             project: project.into(),
             updated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            last_synced_commit: None,
             nodes: Vec::new(),
             edges: Vec::new(),
         }
@@ -166,10 +173,27 @@ impl Default for Layout {
     }
 }
 
+/// Parsed Markdown task checklist progress (`- [ ]` / `- [x]`) for a node spec.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Type)]
+pub struct ChecklistProgress {
+    pub done: u32,
+    pub total: u32,
+}
+
+/// Zero-token Git drift report mapping drifted node IDs to changed file paths.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Type)]
+pub struct DriftReport {
+    pub head_commit: Option<String>,
+    pub is_git_repo: bool,
+    pub drifted: BTreeMap<String, Vec<String>>,
+}
+
 /// Combined project state returned when opening or initializing a `.bloxd/` directory.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct ProjectSnapshot {
     pub project_path: String,
     pub graph: Graph,
     pub layout: Layout,
+    #[serde(default)]
+    pub checklists: BTreeMap<String, ChecklistProgress>,
 }

@@ -2,14 +2,49 @@ import { BloxdNode } from "../bindings";
 import { useProjectStore } from "../store/useProjectStore";
 
 export function Breadcrumbs() {
-  const { graph, currentParentId, viewMode, setCurrentParentId } =
-    useProjectStore();
+  const {
+    graph,
+    currentParentId,
+    viewMode,
+    layerHistory,
+    historyIndex,
+    setCurrentParentId,
+    goBackLayer,
+    goForwardLayer,
+  } = useProjectStore();
 
   if (!graph) return null;
+
+  const canBack = historyIndex > 0;
+  const canForward = historyIndex < layerHistory.length - 1;
+
+  const historyButtons = (
+    <div className="mr-2 flex items-center gap-0.5">
+      <button
+        type="button"
+        onClick={goBackLayer}
+        disabled={!canBack}
+        title="Back (Mouse4 / Alt+Left)"
+        className="cursor-pointer rounded px-1.5 py-0.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-30"
+      >
+        ←
+      </button>
+      <button
+        type="button"
+        onClick={goForwardLayer}
+        disabled={!canForward}
+        title="Forward (Mouse5 / Alt+Right)"
+        className="cursor-pointer rounded px-1.5 py-0.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-30"
+      >
+        →
+      </button>
+    </div>
+  );
 
   if (viewMode === "unified") {
     return (
       <div className="flex items-center gap-2 border-b border-slate-800 bg-slate-900/40 px-4 py-2 text-xs text-slate-400">
+        {historyButtons}
         <span className="rounded bg-blue-500/15 px-2 py-0.5 font-medium text-blue-300">
           Unified Overview
         </span>
@@ -21,11 +56,12 @@ export function Breadcrumbs() {
   if (viewMode === "graph") {
     return (
       <div className="flex items-center gap-2 border-b border-slate-800 bg-slate-900/40 px-4 py-2 text-xs text-slate-400">
+        {historyButtons}
         <span className="rounded bg-violet-500/15 px-2 py-0.5 font-medium text-violet-300">
           Graph View
         </span>
         <span>
-          Click a node to inspect · Double-click to jump to its Nested layer
+          Click a node to select · Double-click to inspect
         </span>
       </div>
     );
@@ -49,6 +85,7 @@ export function Breadcrumbs() {
       aria-label="Layer breadcrumbs"
       className="flex items-center gap-1.5 border-b border-slate-800 bg-slate-900/40 px-4 py-2 text-xs"
     >
+      {historyButtons}
       <button
         type="button"
         onClick={() => setCurrentParentId(null)}

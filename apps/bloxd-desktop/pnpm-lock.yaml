@@ -23,6 +23,9 @@ importers:
       d3-force:
         specifier: ^3.0.1
         version: 3.0.1
+      elkjs:
+        specifier: ^0.12.2
+        version: 0.12.2
       react:
         specifier: ^19.0.0
         version: 19.3.1
@@ -794,6 +797,9 @@ packages:
 
   electron-to-chromium@1.5.493:
     resolution: {integrity: sha512-/Wto2sKd0EpepzMqwSP2il2TNc+rnBDF6k1poCvhRKpaSSD4sLGRBE+FydqHs2QwcW9cXKLVDqnauzJy1oByYw==}
+
+  elkjs@0.12.2:
+    resolution: {integrity: sha512-YC42gyUwsOeKWB/EVTr1abEnNhDEoz+qeLshCBufNW0qrJPcxk+/s1lih4Sbke4BOgjficJGvJ2D9jL/QTC/ew==}
 
   enhanced-resolve@5.27.0:
     resolution: {integrity: sha512-Do6BB2xzlcc/odFg+XEYyneAx4T/WfywO71yw9ePS2tVfRsf7JVR4mUeELadIeHzixkzbG5DpluiEFPi2WGfYQ==}
@@ -1659,6 +1665,8 @@ snapshots:
   detect-libc@2.1.2: {}
 
   electron-to-chromium@1.5.493: {}
+
+  elkjs@0.12.2: {}
 
   enhanced-resolve@5.27.0:
     dependencies:

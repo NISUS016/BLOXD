@@ -67,7 +67,7 @@ fn mcp_stdio_end_to_end() {
         }),
     );
     let tools = tools_resp["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 8);
 
     // 4. upsert_node (x2)
     let up1 = send_and_read(

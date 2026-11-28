@@ -1,4 +1,5 @@
 use crate::prompts::MAP_REPO_PROMPT;
+use bloxd_core::drift::{check_git_drift, mark_nodes_synced};
 use bloxd_core::{
     init_or_open_project, load_graph, read_node_spec, save_graph, write_node_spec, Edge, EdgeKind,
     Graph, Node, NodeKind, Status,
@@ -73,6 +74,7 @@ fn tools_schema() -> Value {
                     "status": { "type": "string", "enum": ["planned", "in_progress", "blocked", "done"] },
                     "summary": { "type": "string" },
                     "linked_files": { "type": "array", "items": { "type": "string" } },
+                    "constraints": { "type": "array", "items": { "type": "string" } },
                     "spec_markdown": { "type": "string" }
                 }
             }
@@ -112,6 +114,24 @@ fn tools_schema() -> Value {
                     "node_id": { "type": "string" },
                     "status": { "type": "string", "enum": ["planned", "in_progress", "blocked", "done"] },
                     "linked_files": { "type": "array", "items": { "type": "string" } }
+                }
+            }
+        },
+        {
+            "name": "get_drifted_nodes",
+            "description": "Returns only nodes whose linked_files changed in Git since their last sync.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "mark_synced",
+            "description": "Marks the given node_ids (or all nodes if omitted) as synced to current Git HEAD.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_ids": { "type": "array", "items": { "type": "string" } }
                 }
             }
         }
@@ -247,6 +267,12 @@ fn call_tool(project_dir: &Path, name: &str, args: &Value) -> Result<Value, Stri
                         .filter_map(|f| f.as_str().map(|s| s.to_string()))
                         .collect();
                 }
+                if let Some(cons) = args.get("constraints").and_then(|v| v.as_array()) {
+                    existing.constraints = cons
+                        .iter()
+                        .filter_map(|c| c.as_str().map(|s| s.to_string()))
+                        .collect();
+                }
             } else {
                 let parent_id = args
                     .get("parent_id")
@@ -271,6 +297,15 @@ fn call_tool(project_dir: &Path, name: &str, args: &Value) -> Result<Value, Stri
                             .collect()
                     })
                     .unwrap_or_default();
+                let constraints = args
+                    .get("constraints")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|c| c.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
 
                 graph.nodes.push(Node {
                     id: id.clone(),
@@ -281,6 +316,8 @@ fn call_tool(project_dir: &Path, name: &str, args: &Value) -> Result<Value, Stri
                     summary,
                     linked_files,
                     spec_file: Some(format!("specs/{id}.md")),
+                    constraints,
+                    synced_commit: None,
                 });
             }
 
@@ -407,6 +444,28 @@ fn call_tool(project_dir: &Path, name: &str, args: &Value) -> Result<Value, Stri
             graph.updated_at = now_rfc3339();
             save_graph(project_dir, &graph).map_err(|e| e.to_string())?;
             Ok(json!({ "ok": true, "node_id": node_id }))
+        }
+
+        "get_drifted_nodes" => {
+            let graph = load_graph(project_dir).map_err(|e| e.to_string())?;
+            let report = check_git_drift(project_dir, &graph);
+            Ok(serde_json::to_value(report).map_err(|e| e.to_string())?)
+        }
+
+        "mark_synced" => {
+            let mut graph = load_graph(project_dir).map_err(|e| e.to_string())?;
+            let node_ids: Vec<String> = args
+                .get("node_ids")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(|x| x.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let head = mark_nodes_synced(project_dir, &mut graph, &node_ids)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "ok": true, "head_commit": head }))
         }
 
         other => Err(format!("unknown tool: {other}")),
