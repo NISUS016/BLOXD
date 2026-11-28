@@ -134,8 +134,50 @@ fn tools_schema() -> Value {
                     "node_ids": { "type": "array", "items": { "type": "string" } }
                 }
             }
+        },
+        {
+            "name": "propose_node",
+            "description": "Creates or updates a translucent Ghost-Node proposal (proposed=true) in graph.yaml for user approval without touching layout.json.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["id", "title", "kind"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "kind": { "type": "string", "enum": ["system", "service", "module", "flow_step", "task", "note"] },
+                    "parent_id": { "type": ["string", "null"] },
+                    "summary": { "type": "string" },
+                    "linked_files": { "type": "array", "items": { "type": "string" } },
+                    "constraints": { "type": "array", "items": { "type": "string" } },
+                    "proposal_note": { "type": ["string", "null"] },
+                    "spec_markdown": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "propose_edge",
+            "description": "Creates or updates a translucent Ghost-Edge proposal (proposed=true) between two nodes in graph.yaml without touching layout.json.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["source", "target"],
+                "properties": {
+                    "source": { "type": "string" },
+                    "target": { "type": "string" },
+                    "label": { "type": ["string", "null"] },
+                    "kind": { "type": "string", "enum": ["data_flow", "dependency", "sequence", "triggers"] },
+                    "proposal_note": { "type": ["string", "null"] }
+                }
+            }
         }
     ])
+}
+
+fn parse_string_list(args: &Value, key: &str) -> Option<Vec<String>> {
+    args.get(key).and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|item| item.as_str().map(|s| s.to_string()))
+            .collect()
+    })
 }
 
 fn call_tool(project_dir: &Path, name: &str, args: &Value) -> Result<Value, String> {
@@ -171,13 +213,20 @@ fn call_tool(project_dir: &Path, name: &str, args: &Value) -> Result<Value, Stri
                     true
                 })
                 .map(|n| {
-                    json!({
+                    let mut obj = json!({
                         "id": n.id,
                         "title": n.title,
                         "kind": n.kind,
                         "parent_id": n.parent_id,
                         "status": n.status,
-                    })
+                    });
+                    if n.proposed {
+                        obj["proposed"] = json!(true);
+                        if let Some(note) = &n.proposal_note {
+                            obj["proposal_note"] = json!(note);
+                        }
+                    }
+                    obj
                 })
                 .collect();
 
@@ -288,24 +337,8 @@ fn call_tool(project_dir: &Path, name: &str, args: &Value) -> Result<Value, Stri
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let linked_files = args
-                    .get("linked_files")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|f| f.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let constraints = args
-                    .get("constraints")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|c| c.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let linked_files = parse_string_list(args, "linked_files").unwrap_or_default();
+                let constraints = parse_string_list(args, "constraints").unwrap_or_default();
 
                 graph.nodes.push(Node {
                     id: id.clone(),
@@ -318,6 +351,8 @@ fn call_tool(project_dir: &Path, name: &str, args: &Value) -> Result<Value, Stri
                     spec_file: Some(format!("specs/{id}.md")),
                     constraints,
                     synced_commit: None,
+                    proposed: false,
+                    proposal_note: None,
                 });
             }
 
@@ -408,6 +443,8 @@ fn call_tool(project_dir: &Path, name: &str, args: &Value) -> Result<Value, Stri
                     target,
                     label,
                     kind,
+                    proposed: false,
+                    proposal_note: None,
                 });
                 id
             };
@@ -454,18 +491,157 @@ fn call_tool(project_dir: &Path, name: &str, args: &Value) -> Result<Value, Stri
 
         "mark_synced" => {
             let mut graph = load_graph(project_dir).map_err(|e| e.to_string())?;
-            let node_ids: Vec<String> = args
-                .get("node_ids")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|s| s.as_str().map(|x| x.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let node_ids: Vec<String> = parse_string_list(args, "node_ids").unwrap_or_default();
             let head = mark_nodes_synced(project_dir, &mut graph, &node_ids)
                 .map_err(|e| e.to_string())?;
             Ok(json!({ "ok": true, "head_commit": head }))
+        }
+
+        "propose_node" => {
+            let id = args
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "missing id".to_string())?
+                .to_string();
+            let title = args
+                .get("title")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "missing title".to_string())?
+                .to_string();
+            let kind: NodeKind = args
+                .get("kind")
+                .ok_or_else(|| "missing kind".to_string())
+                .and_then(parse_enum)?;
+            let proposal_note = args
+                .get("proposal_note")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let mut graph = load_graph(project_dir).map_err(|e| e.to_string())?;
+
+            if let Some(existing) = graph.nodes.iter_mut().find(|n| n.id == id) {
+                if !existing.proposed {
+                    return Err(format!(
+                        "node '{id}' already exists as an accepted node; propose a distinct id instead"
+                    ));
+                }
+                existing.title = title;
+                existing.kind = kind;
+                if let Some(p) = args.get("parent_id") {
+                    existing.parent_id = p.as_str().map(|s| s.to_string());
+                }
+                if let Some(sum) = args.get("summary").and_then(|v| v.as_str()) {
+                    existing.summary = sum.to_string();
+                }
+                if let Some(files) = parse_string_list(args, "linked_files") {
+                    existing.linked_files = files;
+                }
+                if let Some(cons) = parse_string_list(args, "constraints") {
+                    existing.constraints = cons;
+                }
+                existing.proposal_note = proposal_note;
+            } else {
+                let parent_id = args
+                    .get("parent_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let summary = args
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let linked_files = parse_string_list(args, "linked_files").unwrap_or_default();
+                let constraints = parse_string_list(args, "constraints").unwrap_or_default();
+
+                graph.nodes.push(Node {
+                    id: id.clone(),
+                    title,
+                    kind,
+                    parent_id,
+                    status: Status::Planned,
+                    summary,
+                    linked_files,
+                    spec_file: Some(format!("specs/{id}.md")),
+                    constraints,
+                    synced_commit: None,
+                    proposed: true,
+                    proposal_note,
+                });
+            }
+
+            if let Some(spec) = args.get("spec_markdown").and_then(|v| v.as_str()) {
+                write_node_spec(project_dir, &id, spec).map_err(|e| e.to_string())?;
+            }
+
+            graph.updated_at = now_rfc3339();
+            save_graph(project_dir, &graph).map_err(|e| e.to_string())?;
+            Ok(json!({ "ok": true, "id": id, "proposed": true }))
+        }
+
+        "propose_edge" => {
+            let source = args
+                .get("source")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "missing source".to_string())?
+                .to_string();
+            let target = args
+                .get("target")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "missing target".to_string())?
+                .to_string();
+            let label = args
+                .get("label")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let kind = args
+                .get("kind")
+                .map(parse_enum::<EdgeKind>)
+                .transpose()?
+                .unwrap_or_default();
+            let proposal_note = args
+                .get("proposal_note")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let mut graph = load_graph(project_dir).map_err(|e| e.to_string())?;
+            let ids: HashSet<&str> = graph.nodes.iter().map(|n| n.id.as_str()).collect();
+            if !ids.contains(source.as_str()) || !ids.contains(target.as_str()) {
+                return Err(format!(
+                    "both source ('{source}') and target ('{target}') must exist"
+                ));
+            }
+
+            let edge_id = if let Some(existing) = graph
+                .edges
+                .iter_mut()
+                .find(|e| e.source == source && e.target == target)
+            {
+                if !existing.proposed {
+                    return Err(format!(
+                        "edge '{source} -> {target}' already exists as an accepted edge"
+                    ));
+                }
+                existing.label = label;
+                existing.kind = kind;
+                existing.proposal_note = proposal_note;
+                existing.id.clone()
+            } else {
+                let id = format!("e-{source}-{target}");
+                graph.edges.push(Edge {
+                    id: id.clone(),
+                    source,
+                    target,
+                    label,
+                    kind,
+                    proposed: true,
+                    proposal_note,
+                });
+                id
+            };
+
+            graph.updated_at = now_rfc3339();
+            save_graph(project_dir, &graph).map_err(|e| e.to_string())?;
+            Ok(json!({ "ok": true, "id": edge_id, "proposed": true }))
         }
 
         other => Err(format!("unknown tool: {other}")),

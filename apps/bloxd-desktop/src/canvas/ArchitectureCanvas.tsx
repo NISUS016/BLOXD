@@ -73,9 +73,14 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
     openInspector,
     copySelectedContext,
     addEdge,
+    acceptNodeProposal,
+    rejectNodeProposal,
+    acceptAllProposals,
+    rejectAllProposals,
     updateNodeLayout,
     updateViewport,
     ensureLayerLayout,
+    ensureUnifiedMissingNodes,
   } = useProjectStore();
 
   const { setViewport, fitView, setCenter } = useReactFlow();
@@ -102,7 +107,7 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
     [layout, setCenter, setCurrentParentId, viewMode]
   );
 
-  // Ensure any newly opened layer with no saved layout.json positions gets Dagre auto-layout
+  // Ensure any newly opened layer with no saved layout.json positions gets ELK auto-layout
   useEffect(() => {
     if (!graph || !layout) return;
     if (viewMode === "nested") {
@@ -201,6 +206,8 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
             onOpenLayer: handleOpenLayer,
             onJumpToNode: jumpToNode,
             onResizeNode: (id, rect) => updateNodeLayout(id, rect),
+            onAcceptProposal: acceptNodeProposal,
+            onRejectProposal: rejectNodeProposal,
           } satisfies BloxdFlowNodeData,
         };
       });
@@ -248,12 +255,14 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
             driftCount: drift?.drifted?.[n.id]?.length ?? 0,
             isGroupContainer: isContainer,
             onResizeNode: (id, rect) => updateNodeLayout(id, rect),
+            onAcceptProposal: acceptNodeProposal,
+            onRejectProposal: rejectNodeProposal,
           } satisfies BloxdFlowNodeData,
         };
       });
       setRfNodes(nextNodes);
     }
-  }, [graph, layout, checklists, drift, currentParentId, viewMode, childStats, handleOpenLayer, jumpToNode, updateNodeLayout]);
+  }, [graph, layout, checklists, drift, currentParentId, viewMode, childStats, handleOpenLayer, jumpToNode, updateNodeLayout, acceptNodeProposal, rejectNodeProposal]);
 
   // Restore saved viewport when switching layers or projects
   useEffect(() => {
@@ -271,19 +280,26 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
     });
   }, [graph, layout, layerKey, setViewport, fitView]);
 
-  // In Unified mode, only run ELK auto-layout once when unified_nodes is missing or incomplete
+  // In Unified mode: run full ELK once only when unified_nodes is completely empty;
+  // otherwise place newly added/proposed nodes incrementally without disturbing manual tweaks.
   const lastUnifiedLayoutProjectRef = useRef<string | null>(null);
   useEffect(() => {
     if (!graph || !layout || viewMode !== "unified") return;
     const unifiedNodes = layout.unified_nodes ?? {};
+    const unifiedCount = Object.keys(unifiedNodes).length;
     const hasAllNodes = graph.nodes.every((n) => Boolean(unifiedNodes[n.id]));
     if (hasAllNodes) return;
+
+    if (unifiedCount > 0) {
+      ensureUnifiedMissingNodes();
+      return;
+    }
 
     const key = `${graph.project}:${graph.nodes.length}`;
     if (lastUnifiedLayoutProjectRef.current === key) return;
     lastUnifiedLayoutProjectRef.current = key;
     useProjectStore.getState().autoLayoutCurrentLayer();
-  }, [graph, layout, viewMode]);
+  }, [graph, layout, viewMode, ensureUnifiedMissingNodes]);
 
   const rfEdges: Edge[] = useMemo(() => {
     if (!graph) return [];
@@ -483,6 +499,8 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
       color: string;
       strokeWidth: number;
       strokeDasharray?: string;
+      proposed?: boolean;
+      proposalNote?: string | null;
     }
 
     const activeEdgeLabels =
@@ -534,6 +552,8 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
         animated: isActive,
         color,
         strokeWidth: isActive ? 2.2 : 1.85,
+        proposed: e.proposed,
+        proposalNote: e.proposal_note,
       });
     }
 
@@ -873,6 +893,8 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
         bypassOffset: solvedByEdgeId.get(spec.id),
         labelOffset: activeEdgeLabels?.[spec.id],
         elkRoute: activeEdgeRoutes?.[spec.id],
+        proposed: spec.proposed,
+        proposalNote: spec.proposalNote,
       },
       style: {
         stroke: spec.color,
@@ -928,8 +950,34 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
 
   if (!graph) return null;
 
+  const proposalCount =
+    graph.nodes.filter((n) => n.proposed).length +
+    graph.edges.filter((e) => e.proposed).length;
+
   return (
     <div className="relative h-full w-full flex-1 bg-slate-950">
+      {proposalCount > 0 && (
+        <div className="pointer-events-auto absolute left-1/2 top-3 z-30 flex -translate-x-1/2 items-center gap-2.5 rounded-full border border-sky-400/50 bg-slate-900/95 px-3.5 py-1.5 text-xs shadow-2xl backdrop-blur-md">
+          <span className="font-medium text-sky-200">
+            {proposalCount} proposal{proposalCount === 1 ? "" : "s"}
+          </span>
+          <span className="h-3.5 w-px bg-slate-700" />
+          <button
+            type="button"
+            onClick={() => acceptAllProposals()}
+            className="cursor-pointer rounded-full bg-emerald-600/90 px-2.5 py-0.5 text-[11px] font-medium text-white transition hover:bg-emerald-500"
+          >
+            Accept All
+          </button>
+          <button
+            type="button"
+            onClick={() => rejectAllProposals()}
+            className="cursor-pointer rounded-full border border-rose-500/40 bg-rose-950/60 px-2.5 py-0.5 text-[11px] font-medium text-rose-200 transition hover:bg-rose-900/80"
+          >
+            Reject All
+          </button>
+        </div>
+      )}
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}

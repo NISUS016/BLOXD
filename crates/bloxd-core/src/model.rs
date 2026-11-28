@@ -52,6 +52,10 @@ impl Default for EdgeKind {
     }
 }
 
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
 /// A single component, layer, or task in the architecture graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct Node {
@@ -73,6 +77,10 @@ pub struct Node {
     pub constraints: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub synced_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub proposed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_note: Option<String>,
 }
 
 /// A directed edge connecting two nodes.
@@ -85,6 +93,10 @@ pub struct Edge {
     pub label: Option<String>,
     #[serde(default)]
     pub kind: EdgeKind,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub proposed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_note: Option<String>,
 }
 
 /// Root semantic graph stored in `.bloxd/graph.yaml`.

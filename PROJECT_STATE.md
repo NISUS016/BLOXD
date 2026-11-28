@@ -14,7 +14,7 @@
 - **Workspace:**
   - `crates/bloxd-core` — Pure Rust `.bloxd/` schema, atomic storage (`NamedTempFile::persist`), 250 ms debounced `notify` watcher (3×50 ms Windows lock retry), Git drift engine, and scoped context compiler.
   - `crates/bloxd-cli` — Single Rust binary (`init`, `open`, `prompt map`, `mcp` JSON-RPC 2.0 stdio server). Installed globally to `C:\Users\NISHCHAL\.cargo\bin\bloxd.exe` and registered in Antigravity (`~/.gemini/config/mcp_config.json`).
-  - `apps/bloxd-desktop` — Tauri v2 + `tauri-specta` typed IPC + React, TypeScript, `@xyflow/react`, `elkjs` (primary layout engine; `@dagrejs/dagre` kept temporarily pending cleanup), `d3-force`, Tailwind CSS, Zustand.
+  - `apps/bloxd-desktop` — Tauri v2 + `tauri-specta` typed IPC + React, TypeScript, `@xyflow/react`, `elkjs` (primary hierarchical & orthogonal layout engine), `d3-force`, Tailwind CSS, Zustand.
 - **Disk & build hygiene:** `[profile.dev.package."*"] debug = 0` in root `Cargo.toml`; `apps/bloxd-desktop/pnpm-workspace.yaml` sets `allowBuilds: { esbuild: true }` for pnpm v11.
 - **Intentionally deferred:** Visual/aesthetic theme overhaul ("AI vibecoded" look) is parked until core features are mature.
 
@@ -32,21 +32,22 @@
   - Zero-token Git Drift Detection (`Δ N` badges, `get_drifted_nodes` / `mark_synced` MCP tools, "Copy Sync Prompt").
   - Wire routing settings (`90° Rounded` default, `45° Circuit`, `Smooth Bézier`) in bottom-left React Flow Controls; uniform-height toolbar (`h-7`).
 
+- **v0.4 Phase 1 (Ghost-Node Proposals + Cleanup — shipped on `main`):**
+  - Removed unused `@dagrejs/dagre`; kept `elkjs` + `computeFallbackGridLayout`.
+  - Added `proposed` + `proposal_note` on `Node`/`Edge`, `bloxd-core` accept/reject helpers + incremental `unified_nodes` placement, `propose_node` & `propose_edge` MCP tools (`10` tools total), translucent dashed Ghost-Node/Edge UI with inline ✓/✕ actions, and floating `Accept All | Reject All` bar.
+
 ## 4. Recent Fixes & Current Repo Delta
 
-- **Latest pushed code commit:** `a0f736b` on `main` (pushed to `origin/main`; `feat/elk-layout` safety branch at `38c0963` merged cleanly).
-- **ELK Hybrid Layout & Collision-Free Routing:** Replaced Dagre with `elkjs` (`computeElkLayout` for Nested, `computeElkHierarchicalLayout` with `INCLUDE_CHILDREN` for Unified), fixed explicit `undefined` keys on `ElkNode` that triggered ELK's GWT fallback crash, made `computeFallbackGridLayout` size-aware, and handled all 16 handle pairs in `buildRoundedOrthoPath` + pure 45° `buildCircuitPath`.
-- **Separated Nested vs. Unified State:** Added backward-compatible `unified_nodes`, `unified_edge_labels`, `edge_routes`, and `unified_edge_routes` to Rust `Layout` & `bindings.ts`; Unified switches no longer overwrite Nested coordinates.
-- **Selective Drag Invalidation & Port Dots:** Auto-Layout stores ELK world-space polylines/labels; manually moving/resizing a node invalidates only connected routes so they fall back cleanly to the dynamic pill-collision solver. Added colored SVG start port dots (`BloxdEdge.tsx`) at wire origins.
-- **Note:** Keep `@dagrejs/dagre` cleanup & installing refreshed `bloxd.exe` release binary in mind if needed after Rust updates.
+- **Latest base commits on `main`:** `85e9b8c` (`a0f736b` ELK layout + `PROJECT_STATE.md`), followed by v0.4 Phase 1.
+- **ELK Hybrid Layout & Collision-Free Routing (`a0f736b`):** `elkjs` (`computeElkLayout` for Nested, `computeElkHierarchicalLayout` for Unified), separated `unified_nodes` / `unified_edge_routes` / `edge_routes` state, selective route invalidation on node move/resize, all-16-pair `buildRoundedOrthoPath` + pure 45° `buildCircuitPath`, and colored wire start port dots.
+- **v0.4 Phase 1 Delta:** Ghost-Node Proposals across `bloxd-core`, `bloxd-cli`, and `bloxd-desktop` + `@dagrejs/dagre` removal (`cargo test --workspace`, `pnpm build`, `cargo build -p bloxd-desktop` passing); global `bloxd.exe` reinstall deferred until after Phase 4.
 
 ## 5. Active Planning Thread (v0.4 — AI ↔ App Interaction)
 
-Bridging from copy-paste/silent-overwrite to a live collaborative workspace (decisions pending):
-- **Ghost-Node Proposals:** Translucent proposed nodes/edges via MCP (`propose_node` / `propose_edge`) with Accept/Reject controls.
-- **Live Agent Presence & Activity Feed:** Ephemeral `.bloxd/.agent-state.json` beacon showing active agent node + slim activity log.
-- **Direct Task Dispatch / Agent Queue:** Queuing tasks from `bloxd` for MCP agents (`get_next_task`) or configurable local CLI triggers per node.
-- **Moodboard Nodes:** Freeform sticky notes + pasted reference images (`.bloxd/assets/`) agents can crystallize into Ghost-Node proposals.
+Remaining phases in `bloxd_v0_4_plan.md` (Phase 1 complete):
+- **Phase 2 — Live Agent Presence & Activity Feed:** Ephemeral `.bloxd/.agent-state.json` beacon + typed `watcher.rs` events + bottom-right Activity feed.
+- **Phase 3 — Direct Task Dispatch & Agent Queue:** `.bloxd/queue.yaml`, `get_next_task`/`claim_task`/`complete_task` MCP tools, `queue.yaml` watcher, and temp-file Windows CLI runner.
+- **Phase 4 — Moodboard Nodes & Crystallize Workflow:** Sticky notes + `Ctrl+V`/dropped assets under `.bloxd/assets/`, and `crystallize_moodboard` → Ghost-Node proposals.
 
 ## 6. Long-Term Vision Parking Lot
 

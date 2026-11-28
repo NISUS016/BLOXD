@@ -160,14 +160,15 @@ pub fn write_node_spec(
     atomic_write(&path, content.as_bytes())
 }
 
-/// Assigns clean non-overlapping coordinates in `layout` for any nodes in `graph` missing a layout entry.
-///
-/// Returns `true` if `layout` was modified.
-pub fn auto_place_missing_nodes(graph: &Graph, layout: &mut Layout) -> bool {
+/// Places any nodes missing from `nodes_map` at non-overlapping sibling slots.
+fn place_missing_in_map(
+    graph: &Graph,
+    nodes_map: &mut BTreeMap<String, NodeLayout>,
+) -> bool {
     let mut changed = false;
 
     for node in &graph.nodes {
-        if layout.nodes.contains_key(&node.id) {
+        if nodes_map.contains_key(&node.id) {
             continue;
         }
 
@@ -175,12 +176,12 @@ pub fn auto_place_missing_nodes(graph: &Graph, layout: &mut Layout) -> bool {
             .nodes
             .iter()
             .filter(|other| other.parent_id == node.parent_id && other.id != node.id)
-            .filter_map(|other| layout.nodes.get(&other.id))
+            .filter_map(|other| nodes_map.get(&other.id))
             .collect();
 
         let idx = sibling_positions.len();
-        let mut x = 80.0 + ((idx % 3) as f64) * 300.0;
-        let mut y = 80.0 + ((idx / 3) as f64) * 170.0;
+        let mut x = 80.0 + ((idx % 3) as f64) * 320.0;
+        let mut y = if node.parent_id.is_some() { 112.0 } else { 80.0 } + ((idx / 3) as f64) * 180.0;
 
         while sibling_positions
             .iter()
@@ -190,13 +191,13 @@ pub fn auto_place_missing_nodes(graph: &Graph, layout: &mut Layout) -> bool {
             y += 40.0;
         }
 
-        layout.nodes.insert(
+        nodes_map.insert(
             node.id.clone(),
             NodeLayout {
                 x,
                 y,
-                width: 240.0,
-                height: 110.0,
+                width: 260.0,
+                height: 136.0,
                 color: None,
             },
         );
@@ -204,6 +205,208 @@ pub fn auto_place_missing_nodes(graph: &Graph, layout: &mut Layout) -> bool {
     }
 
     changed
+}
+
+/// Assigns clean non-overlapping coordinates in `layout` for any nodes in `graph` missing a layout entry.
+/// When `layout.unified_nodes` is already initialized, also places missing nodes incrementally there.
+///
+/// Returns `true` if `layout` was modified.
+pub fn auto_place_missing_nodes(graph: &Graph, layout: &mut Layout) -> bool {
+    let mut changed = place_missing_in_map(graph, &mut layout.nodes);
+    if !layout.unified_nodes.is_empty() && place_missing_in_map(graph, &mut layout.unified_nodes) {
+        changed = true;
+    }
+    changed
+}
+
+fn prune_layout_for_removed(
+    layout: &mut Layout,
+    removed_nodes: &std::collections::HashSet<String>,
+    removed_edges: &std::collections::HashSet<String>,
+) {
+    for nid in removed_nodes {
+        layout.nodes.remove(nid);
+        layout.unified_nodes.remove(nid);
+    }
+    let prune_map = |map: &mut BTreeMap<String, _>| {
+        map.retain(|k, _| {
+            if removed_edges.contains(k) {
+                return false;
+            }
+            if let Some(rest) = k.strip_prefix("rollup-") {
+                if let Some((src, dst)) = rest.split_once("->") {
+                    if removed_nodes.contains(src) || removed_nodes.contains(dst) {
+                        return false;
+                    }
+                }
+            }
+            true
+        });
+    };
+    prune_map(&mut layout.edge_labels);
+    prune_map(&mut layout.unified_edge_labels);
+    // Prune edge_routes and unified_edge_routes separately (distinct value types)
+    layout.edge_routes.retain(|k, _| {
+        if removed_edges.contains(k) {
+            return false;
+        }
+        if let Some(rest) = k.strip_prefix("rollup-") {
+            if let Some((src, dst)) = rest.split_once("->") {
+                if removed_nodes.contains(src) || removed_nodes.contains(dst) {
+                    return false;
+                }
+            }
+        }
+        true
+    });
+    layout.unified_edge_routes.retain(|k, _| {
+        if removed_edges.contains(k) {
+            return false;
+        }
+        if let Some(rest) = k.strip_prefix("rollup-") {
+            if let Some((src, dst)) = rest.split_once("->") {
+                if removed_nodes.contains(src) || removed_nodes.contains(dst) {
+                    return false;
+                }
+            }
+        }
+        true
+    });
+}
+
+fn collect_descendant_ids(graph: &Graph, root_id: &str) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::from([root_id.to_string()]);
+    let mut added = true;
+    while added {
+        added = false;
+        for n in &graph.nodes {
+            if let Some(pid) = &n.parent_id {
+                if set.contains(pid) && set.insert(n.id.clone()) {
+                    added = true;
+                }
+            }
+        }
+    }
+    set
+}
+
+/// Accepts a single proposed node (`proposed = false`, clears `proposal_note`).
+pub fn accept_node_proposal(graph: &mut Graph, node_id: &str) -> bool {
+    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id && n.proposed) {
+        node.proposed = false;
+        node.proposal_note = None;
+        return true;
+    }
+    false
+}
+
+/// Rejects a single proposed node (and its descendants + connected edges), pruning layout if provided.
+pub fn reject_node_proposal(
+    graph: &mut Graph,
+    layout: Option<&mut Layout>,
+    node_id: &str,
+) -> bool {
+    if !graph.nodes.iter().any(|n| n.id == node_id && n.proposed) {
+        return false;
+    }
+    let to_remove = collect_descendant_ids(graph, node_id);
+    let mut removed_edges = std::collections::HashSet::new();
+    graph.edges.retain(|e| {
+        let drop = to_remove.contains(&e.source) || to_remove.contains(&e.target);
+        if drop {
+            removed_edges.insert(e.id.clone());
+        }
+        !drop
+    });
+    graph.nodes.retain(|n| !to_remove.contains(&n.id));
+    if let Some(l) = layout {
+        prune_layout_for_removed(l, &to_remove, &removed_edges);
+    }
+    true
+}
+
+/// Accepts a single proposed edge (`proposed = false`, clears `proposal_note`).
+pub fn accept_edge_proposal(graph: &mut Graph, edge_id: &str) -> bool {
+    if let Some(edge) = graph.edges.iter_mut().find(|e| e.id == edge_id && e.proposed) {
+        edge.proposed = false;
+        edge.proposal_note = None;
+        return true;
+    }
+    false
+}
+
+/// Rejects a single proposed edge, pruning route/label layout entries if provided.
+pub fn reject_edge_proposal(
+    graph: &mut Graph,
+    layout: Option<&mut Layout>,
+    edge_id: &str,
+) -> bool {
+    let before = graph.edges.len();
+    graph.edges.retain(|e| !(e.id == edge_id && e.proposed));
+    if graph.edges.len() == before {
+        return false;
+    }
+    if let Some(l) = layout {
+        let empty_nodes = std::collections::HashSet::new();
+        let removed_edges = std::collections::HashSet::from([edge_id.to_string()]);
+        prune_layout_for_removed(l, &empty_nodes, &removed_edges);
+    }
+    true
+}
+
+/// Accepts all proposed nodes and edges in `graph`, returning the number promoted.
+pub fn accept_all_proposals(graph: &mut Graph) -> usize {
+    let mut count = 0;
+    for n in &mut graph.nodes {
+        if n.proposed {
+            n.proposed = false;
+            n.proposal_note = None;
+            count += 1;
+        }
+    }
+    for e in &mut graph.edges {
+        if e.proposed {
+            e.proposed = false;
+            e.proposal_note = None;
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Rejects all proposed nodes (deleting dangling edges) and proposed edges, returning items removed.
+pub fn reject_all_proposals(graph: &mut Graph, layout: Option<&mut Layout>) -> usize {
+    let proposed_roots: Vec<String> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.proposed)
+        .map(|n| n.id.clone())
+        .collect();
+    let mut removed_nodes = std::collections::HashSet::new();
+    for nid in &proposed_roots {
+        removed_nodes.extend(collect_descendant_ids(graph, nid));
+    }
+
+    let before_nodes = graph.nodes.len();
+    graph.nodes.retain(|n| !removed_nodes.contains(&n.id));
+    let removed_node_count = before_nodes - graph.nodes.len();
+
+    let mut removed_edges = std::collections::HashSet::new();
+    let before_edges = graph.edges.len();
+    graph.edges.retain(|e| {
+        let drop = e.proposed || removed_nodes.contains(&e.source) || removed_nodes.contains(&e.target);
+        if drop {
+            removed_edges.insert(e.id.clone());
+        }
+        !drop
+    });
+    let removed_edge_count = before_edges - graph.edges.len();
+
+    if let Some(l) = layout {
+        prune_layout_for_removed(l, &removed_nodes, &removed_edges);
+    }
+
+    removed_node_count + removed_edge_count
 }
 
 /// Parses Markdown task list items (`- [ ] `, `- [x] `, `- [X] `) from `markdown`.

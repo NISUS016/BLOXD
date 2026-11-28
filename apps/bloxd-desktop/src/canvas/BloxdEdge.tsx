@@ -15,6 +15,8 @@ interface BloxdEdgeData {
   bypassOffset?: { x: number; y: number };
   labelOffset?: { x: number; y: number };
   elkRoute?: EdgeRoute;
+  proposed?: boolean;
+  proposalNote?: string | null;
 }
 
 interface Point {
@@ -300,6 +302,8 @@ export const BloxdEdge = memo(function BloxdEdge({
 }: EdgeProps) {
   const { getZoom } = useReactFlow();
   const updateEdgeLabelOffset = useProjectStore((s) => s.updateEdgeLabelOffset);
+  const acceptEdgeProposal = useProjectStore((s) => s.acceptEdgeProposal);
+  const rejectEdgeProposal = useProjectStore((s) => s.rejectEdgeProposal);
   const snapToGrid = useProjectStore((s) => s.snapToGrid);
   const wireStyle = useProjectStore((s) => s.wireStyle);
 
@@ -309,6 +313,8 @@ export const BloxdEdge = memo(function BloxdEdge({
   const bypassOffset = edgeData?.bypassOffset;
   const savedOffset = edgeData?.labelOffset;
   const elkRoute = edgeData?.elkRoute;
+  const isProposed = Boolean(edgeData?.proposed);
+  const proposalNote = edgeData?.proposalNote;
 
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number } | null>(
     null
@@ -417,6 +423,12 @@ export const BloxdEdge = memo(function BloxdEdge({
         style={{
           stroke: activeStroke,
           strokeWidth: selected ? 2.6 : 1.85,
+          ...(isProposed
+            ? {
+                strokeDasharray: (style?.strokeDasharray as string | undefined) ?? "6 4",
+                opacity: 0.78,
+              }
+            : {}),
           ...style,
         }}
       />
@@ -427,9 +439,10 @@ export const BloxdEdge = memo(function BloxdEdge({
         fill={activeStroke}
         stroke="#020617"
         strokeWidth={1.4}
+        opacity={isProposed ? 0.78 : 1}
         className="pointer-events-none"
       />
-      {label && (
+      {(label || isProposed) && (
         <EdgeLabelRenderer>
           <div
             onPointerDown={(e) => {
@@ -479,15 +492,57 @@ export const BloxdEdge = memo(function BloxdEdge({
               setDragOffset(null);
               updateEdgeLabelOffset(id, null);
             }}
-            title="Drag to route wire & move label · Double-click to reset"
+            title={
+              isProposed
+                ? proposalNote || "Proposed edge — Accept (✓) or Reject (✕)"
+                : "Drag to route wire & move label · Double-click to reset"
+            }
             style={{
               zIndex: 30,
               transform: `translate(-50%, -50%) translate(${renderLabelX}px,${renderLabelY}px)`,
-              borderColor: strokeColor,
+              borderColor: isProposed ? "#38bdf8" : strokeColor,
             }}
-            className="nodrag nopan pointer-events-auto absolute max-w-[200px] cursor-grab truncate rounded border bg-slate-950 px-2 py-0.5 text-[10px] font-medium text-slate-100 shadow-lg active:cursor-grabbing"
+            className={`nodrag nopan pointer-events-auto absolute flex max-w-[240px] cursor-grab items-center gap-1.5 rounded border px-2 py-0.5 text-[10px] font-medium shadow-lg active:cursor-grabbing ${
+              isProposed
+                ? "border-dashed bg-slate-950/85 text-sky-200 backdrop-blur-sm"
+                : "bg-slate-950 text-slate-100"
+            }`}
           >
-            {label}
+            {isProposed && (
+              <span className="shrink-0 font-mono text-[9px] font-bold uppercase text-sky-400">
+                PROPOSED
+              </span>
+            )}
+            <span className="truncate">{label || proposalNote || "link"}</span>
+            {isProposed && (
+              <span
+                className="flex shrink-0 items-center gap-0.5"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    acceptEdgeProposal(id);
+                  }}
+                  title="Accept proposed edge"
+                  className="inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded bg-emerald-500/20 text-[10px] font-bold text-emerald-300 hover:bg-emerald-500/40"
+                >
+                  ✓
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    rejectEdgeProposal(id);
+                  }}
+                  title="Reject proposed edge"
+                  className="inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded bg-rose-500/20 text-[10px] font-bold text-rose-300 hover:bg-rose-500/40"
+                >
+                  ✕
+                </button>
+              </span>
+            )}
           </div>
         </EdgeLabelRenderer>
       )}

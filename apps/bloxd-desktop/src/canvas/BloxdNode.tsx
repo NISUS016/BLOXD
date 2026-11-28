@@ -30,6 +30,8 @@ export interface BloxdFlowNodeData extends Record<string, unknown> {
     nodeId: string,
     rect: { x: number; y: number; width: number; height: number }
   ) => void;
+  onAcceptProposal?: (nodeId: string) => void;
+  onRejectProposal?: (nodeId: string) => void;
 }
 
 const STATUS_STYLES: Record<
@@ -109,6 +111,8 @@ export const BloxdNode = memo(function BloxdNode({
     onOpenLayer,
     onJumpToNode,
     onResizeNode,
+    onAcceptProposal,
+    onRejectProposal,
   } = data as BloxdFlowNodeData;
   const statusStyle = STATUS_STYLES[model.status] ?? STATUS_STYLES.planned;
   const kindStyle = KIND_STYLES[model.kind] ?? KIND_STYLES.module;
@@ -116,6 +120,7 @@ export const BloxdNode = memo(function BloxdNode({
 
   const activeList = popoverKind === "in" ? externalIn : externalOut;
   const constraintCount = model.constraints?.length ?? 0;
+  const isProposed = Boolean(model.proposed);
 
   return (
     <div className="group relative h-full w-full">
@@ -142,14 +147,20 @@ export const BloxdNode = memo(function BloxdNode({
 
       {/* Bounded card surface so inner text/badges never overflow card bounds */}
       <div
-        className={`relative flex h-full w-full min-w-0 flex-col overflow-hidden rounded-xl border bg-slate-900/95 p-3 shadow-lg transition ${
-          statusStyle.border
+        className={`relative flex h-full w-full min-w-0 flex-col overflow-hidden rounded-xl border p-3 shadow-lg transition ${
+          isProposed
+            ? "border-dashed border-sky-400/75 bg-slate-900/60 opacity-85 backdrop-blur-sm"
+            : `bg-slate-900/95 ${statusStyle.border}`
         } ${selected ? "ring-2 ring-blue-500" : ""} ${
-          isGroupContainer ? "bg-slate-900/50 backdrop-blur-sm" : ""
+          isGroupContainer && !isProposed ? "bg-slate-900/50 backdrop-blur-sm" : ""
         }`}
       >
         {/* Kind color accent strip */}
-        <div className={`absolute inset-x-0 top-0 h-0.5 ${kindStyle.accentBar}`} />
+        <div
+          className={`absolute inset-x-0 top-0 h-0.5 ${
+            isProposed ? "bg-sky-400/70" : kindStyle.accentBar
+          }`}
+        />
 
         {/* Header row */}
         <div className="flex min-w-0 shrink-0 items-center justify-between gap-1.5 pt-0.5">
@@ -159,6 +170,14 @@ export const BloxdNode = memo(function BloxdNode({
             >
               {model.kind.replace("_", " ")}
             </span>
+            {isProposed && (
+              <span
+                title={model.proposal_note ?? "Proposed by AI agent"}
+                className="shrink-0 rounded border border-dashed border-sky-400/60 bg-sky-500/15 px-1.5 py-0.5 font-mono text-[9px] font-semibold tracking-wider text-sky-300"
+              >
+                PROPOSED
+              </span>
+            )}
             {driftCount > 0 && (
               <span
                 title={`${driftCount} linked file(s) changed since last sync`}
@@ -168,21 +187,51 @@ export const BloxdNode = memo(function BloxdNode({
               </span>
             )}
           </div>
-          <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-slate-400">
-            <span className={`h-2 w-2 rounded-full ${statusStyle.dot}`} />
-            {statusStyle.label}
-            {statusStyle.badge && (
-              <span
-                className={`ml-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full text-[9px] font-bold ${
-                  model.status === "done"
-                    ? "bg-emerald-500/20 text-emerald-300"
-                    : "bg-rose-500/20 text-rose-300"
-                }`}
+          {isProposed ? (
+            <div
+              className="nodrag nopan flex shrink-0 items-center gap-1"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onAcceptProposal?.(model.id);
+                }}
+                title="Accept proposed node"
+                className="inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded border border-emerald-500/50 bg-emerald-500/20 text-[11px] font-bold text-emerald-300 transition hover:bg-emerald-500/40"
               >
-                {statusStyle.badge}
-              </span>
-            )}
-          </span>
+                ✓
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRejectProposal?.(model.id);
+                }}
+                title="Reject and remove proposed node"
+                className="inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded border border-rose-500/50 bg-rose-500/20 text-[11px] font-bold text-rose-300 transition hover:bg-rose-500/40"
+              >
+                ✕
+              </button>
+            </div>
+          ) : (
+            <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-slate-400">
+              <span className={`h-2 w-2 rounded-full ${statusStyle.dot}`} />
+              {statusStyle.label}
+              {statusStyle.badge && (
+                <span
+                  className={`ml-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full text-[9px] font-bold ${
+                    model.status === "done"
+                      ? "bg-emerald-500/20 text-emerald-300"
+                      : "bg-rose-500/20 text-rose-300"
+                  }`}
+                >
+                  {statusStyle.badge}
+                </span>
+              )}
+            </span>
+          )}
         </div>
 
         {/* Body */}
@@ -194,13 +243,22 @@ export const BloxdNode = memo(function BloxdNode({
             {model.title}
           </div>
 
-          {model.summary && (
+          {isProposed && model.proposal_note ? (
             <p
-              title={model.summary}
-              className="mt-0.5 line-clamp-2 text-xs leading-snug text-slate-400"
+              title={model.proposal_note}
+              className="mt-0.5 line-clamp-2 text-xs italic leading-snug text-sky-300/90"
             >
-              {model.summary}
+              {model.proposal_note}
             </p>
+          ) : (
+            model.summary && (
+              <p
+                title={model.summary}
+                className="mt-0.5 line-clamp-2 text-xs leading-snug text-slate-400"
+              >
+                {model.summary}
+              </p>
+            )
           )}
         </div>
 

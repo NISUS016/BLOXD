@@ -15,6 +15,8 @@ export interface BloxdNode {
   spec_file: string | null;
   constraints?: string[];
   synced_commit?: string | null;
+  proposed?: boolean;
+  proposal_note?: string | null;
 }
 
 export interface BloxdEdge {
@@ -23,6 +25,8 @@ export interface BloxdEdge {
   target: string;
   label: string | null;
   kind: EdgeKind;
+  proposed?: boolean;
+  proposal_note?: string | null;
 }
 
 export interface Graph {

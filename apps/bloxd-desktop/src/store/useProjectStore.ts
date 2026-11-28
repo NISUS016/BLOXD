@@ -119,11 +119,19 @@ interface ProjectState {
   addEdge: (input: AddEdgeInput) => BloxdEdge | null;
   deleteEdge: (id: string) => void;
 
+  acceptNodeProposal: (id: string) => void;
+  rejectNodeProposal: (id: string) => void;
+  acceptEdgeProposal: (id: string) => void;
+  rejectEdgeProposal: (id: string) => void;
+  acceptAllProposals: () => void;
+  rejectAllProposals: () => void;
+
   updateNodeLayout: (id: string, patch: Partial<NodeLayout>) => void;
   updateEdgeLabelOffset: (edgeId: string, offset: { x: number; y: number } | null) => void;
   updateViewport: (layerKey: string, viewport: Viewport) => void;
   autoLayoutCurrentLayer: (direction?: LayoutDirection) => Promise<void>;
   ensureLayerLayout: (parentId: string | null) => void;
+  ensureUnifiedMissingNodes: () => void;
   copyNodeContext: (nodeId: string) => Promise<void>;
 }
 
@@ -214,6 +222,42 @@ function invalidateRoutesForNode(
     }
   }
   return next;
+}
+
+function pruneLayoutForRemoved(
+  layout: Layout,
+  removedNodeIds: Set<string>,
+  removedEdgeIds: Set<string>
+): Layout {
+  const nextNodes = { ...layout.nodes };
+  const nextUnifiedNodes = layout.unified_nodes ? { ...layout.unified_nodes } : undefined;
+  for (const nid of removedNodeIds) {
+    delete nextNodes[nid];
+    if (nextUnifiedNodes) delete nextUnifiedNodes[nid];
+  }
+
+  const pruneEdgeMap = <T,>(map: Record<string, T> | undefined): Record<string, T> | undefined => {
+    if (!map) return undefined;
+    const next = { ...map };
+    for (const eid of removedEdgeIds) delete next[eid];
+    for (const k of Object.keys(next)) {
+      if (k.startsWith("rollup-")) {
+        const [s, t] = k.slice("rollup-".length).split("->");
+        if (removedNodeIds.has(s) || removedNodeIds.has(t)) delete next[k];
+      }
+    }
+    return next;
+  };
+
+  return {
+    ...layout,
+    nodes: nextNodes,
+    unified_nodes: nextUnifiedNodes,
+    edge_labels: pruneEdgeMap(layout.edge_labels),
+    unified_edge_labels: pruneEdgeMap(layout.unified_edge_labels),
+    edge_routes: pruneEdgeMap(layout.edge_routes),
+    unified_edge_routes: pruneEdgeMap(layout.unified_edge_routes),
+  };
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => {
@@ -814,6 +858,182 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       scheduleSaveLayout();
     },
 
+    acceptNodeProposal: (id) => {
+      const { graph, layout, undoStack } = get();
+      if (!graph || !layout) return;
+      if (!graph.nodes.some((n) => n.id === id && n.proposed)) return;
+      const nextUndo = [
+        ...undoStack,
+        { graph: structuredClone(graph), layout: structuredClone(layout) },
+      ].slice(-MAX_UNDO_HISTORY);
+      set({
+        graph: {
+          ...graph,
+          updated_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+          nodes: graph.nodes.map((n) =>
+            n.id === id ? { ...n, proposed: false, proposal_note: null } : n
+          ),
+        },
+        undoStack: nextUndo,
+        redoStack: [],
+      });
+      scheduleSaveGraph();
+      triggerToast(`Accepted node "${id}"`, "success");
+    },
+
+    rejectNodeProposal: (id) => {
+      const { graph, layout, undoStack, selectedNodeId, inspectedNodeId } = get();
+      if (!graph || !layout) return;
+      if (!graph.nodes.some((n) => n.id === id && n.proposed)) return;
+      const nextUndo = [
+        ...undoStack,
+        { graph: structuredClone(graph), layout: structuredClone(layout) },
+      ].slice(-MAX_UNDO_HISTORY);
+
+      const toDelete = collectDescendants(graph.nodes, id);
+      const removedEdgeIds = new Set(
+        graph.edges
+          .filter((e) => toDelete.has(e.source) || toDelete.has(e.target))
+          .map((e) => e.id)
+      );
+      const nextLayout = pruneLayoutForRemoved(layout, toDelete, removedEdgeIds);
+      set({
+        graph: {
+          ...graph,
+          updated_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+          nodes: graph.nodes.filter((n) => !toDelete.has(n.id)),
+          edges: graph.edges.filter((e) => !removedEdgeIds.has(e.id)),
+        },
+        layout: nextLayout,
+        undoStack: nextUndo,
+        redoStack: [],
+        selectedNodeId: selectedNodeId && toDelete.has(selectedNodeId) ? null : selectedNodeId,
+        inspectedNodeId: inspectedNodeId && toDelete.has(inspectedNodeId) ? null : inspectedNodeId,
+      });
+      scheduleSaveGraph();
+      scheduleSaveLayout();
+      triggerToast(`Rejected node "${id}"`, "info");
+    },
+
+    acceptEdgeProposal: (id) => {
+      const { graph, layout, undoStack } = get();
+      if (!graph || !layout) return;
+      if (!graph.edges.some((e) => e.id === id && e.proposed)) return;
+      const nextUndo = [
+        ...undoStack,
+        { graph: structuredClone(graph), layout: structuredClone(layout) },
+      ].slice(-MAX_UNDO_HISTORY);
+      set({
+        graph: {
+          ...graph,
+          updated_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+          edges: graph.edges.map((e) =>
+            e.id === id ? { ...e, proposed: false, proposal_note: null } : e
+          ),
+        },
+        undoStack: nextUndo,
+        redoStack: [],
+      });
+      scheduleSaveGraph();
+      triggerToast("Accepted proposed edge", "success");
+    },
+
+    rejectEdgeProposal: (id) => {
+      const { graph, layout, undoStack, selectedEdgeId } = get();
+      if (!graph || !layout) return;
+      if (!graph.edges.some((e) => e.id === id && e.proposed)) return;
+      const nextUndo = [
+        ...undoStack,
+        { graph: structuredClone(graph), layout: structuredClone(layout) },
+      ].slice(-MAX_UNDO_HISTORY);
+      const nextLayout = pruneLayoutForRemoved(layout, new Set(), new Set([id]));
+      set({
+        graph: {
+          ...graph,
+          updated_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+          edges: graph.edges.filter((e) => e.id !== id),
+        },
+        layout: nextLayout,
+        undoStack: nextUndo,
+        redoStack: [],
+        selectedEdgeId: selectedEdgeId === id ? null : selectedEdgeId,
+      });
+      scheduleSaveGraph();
+      scheduleSaveLayout();
+      triggerToast("Rejected proposed edge", "info");
+    },
+
+    acceptAllProposals: () => {
+      const { graph, layout, undoStack } = get();
+      if (!graph || !layout) return;
+      const count =
+        graph.nodes.filter((n) => n.proposed).length +
+        graph.edges.filter((e) => e.proposed).length;
+      if (count === 0) return;
+      const nextUndo = [
+        ...undoStack,
+        { graph: structuredClone(graph), layout: structuredClone(layout) },
+      ].slice(-MAX_UNDO_HISTORY);
+      set({
+        graph: {
+          ...graph,
+          updated_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+          nodes: graph.nodes.map((n) =>
+            n.proposed ? { ...n, proposed: false, proposal_note: null } : n
+          ),
+          edges: graph.edges.map((e) =>
+            e.proposed ? { ...e, proposed: false, proposal_note: null } : e
+          ),
+        },
+        undoStack: nextUndo,
+        redoStack: [],
+      });
+      scheduleSaveGraph();
+      triggerToast(`Accepted ${count} proposal(s)`, "success");
+    },
+
+    rejectAllProposals: () => {
+      const { graph, layout, undoStack, selectedNodeId, inspectedNodeId, selectedEdgeId } = get();
+      if (!graph || !layout) return;
+      const proposedRoots = graph.nodes.filter((n) => n.proposed).map((n) => n.id);
+      const toDelete = new Set<string>();
+      for (const pid of proposedRoots) {
+        for (const did of collectDescendants(graph.nodes, pid)) {
+          toDelete.add(did);
+        }
+      }
+      const removedEdgeIds = new Set(
+        graph.edges
+          .filter((e) => e.proposed || toDelete.has(e.source) || toDelete.has(e.target))
+          .map((e) => e.id)
+      );
+      const count = toDelete.size + graph.edges.filter((e) => e.proposed).length;
+      if (count === 0) return;
+
+      const nextUndo = [
+        ...undoStack,
+        { graph: structuredClone(graph), layout: structuredClone(layout) },
+      ].slice(-MAX_UNDO_HISTORY);
+      const nextLayout = pruneLayoutForRemoved(layout, toDelete, removedEdgeIds);
+      set({
+        graph: {
+          ...graph,
+          updated_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+          nodes: graph.nodes.filter((n) => !toDelete.has(n.id)),
+          edges: graph.edges.filter((e) => !removedEdgeIds.has(e.id)),
+        },
+        layout: nextLayout,
+        undoStack: nextUndo,
+        redoStack: [],
+        selectedNodeId: selectedNodeId && toDelete.has(selectedNodeId) ? null : selectedNodeId,
+        inspectedNodeId: inspectedNodeId && toDelete.has(inspectedNodeId) ? null : inspectedNodeId,
+        selectedEdgeId: selectedEdgeId && removedEdgeIds.has(selectedEdgeId) ? null : selectedEdgeId,
+      });
+      scheduleSaveGraph();
+      scheduleSaveLayout();
+      triggerToast(`Rejected ${count} proposal(s)`, "info");
+    },
+
     updateNodeLayout: (id, patch) => {
       const { graph, layout, viewMode, undoStack } = get();
       if (!graph || !layout) return;
@@ -1241,6 +1461,35 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         layout: {
           ...layout,
           nodes: nextNodesLayout,
+        },
+      });
+      scheduleSaveLayout();
+    },
+
+    ensureUnifiedMissingNodes: () => {
+      const { graph, layout } = get();
+      if (!graph || !layout) return;
+      const existing = layout.unified_nodes ?? {};
+      const missing = graph.nodes.filter((n) => !existing[n.id]);
+      if (missing.length === 0) return;
+
+      const nextUnified = { ...existing };
+      for (const n of missing) {
+        const siblings = graph.nodes.filter(
+          (s) => (s.parent_id ?? null) === (n.parent_id ?? null) && nextUnified[s.id]
+        );
+        const slot = findFreeSlot(siblings, { ...layout, nodes: nextUnified });
+        nextUnified[n.id] = {
+          x: slot.x,
+          y: n.parent_id ? Math.max(112, slot.y) : slot.y,
+          width: 260,
+          height: 136,
+        };
+      }
+      set({
+        layout: {
+          ...layout,
+          unified_nodes: nextUnified,
         },
       });
       scheduleSaveLayout();

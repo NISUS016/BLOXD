@@ -67,7 +67,7 @@ fn mcp_stdio_end_to_end() {
         }),
     );
     let tools = tools_resp["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 8);
+    assert_eq!(tools.len(), 10);
 
     // 4. upsert_node (x2)
     let up1 = send_and_read(
@@ -186,6 +186,85 @@ fn mcp_stdio_end_to_end() {
         .as_str()
         .unwrap();
     assert!(prompt_text.contains("upsert_node"));
+
+    // 9. propose_node and propose_edge (Ghost-Node proposals)
+    let prop_node_resp = send_and_read(
+        &mut stdin,
+        &mut reader,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "propose_node",
+                "arguments": {
+                    "id": "cache",
+                    "title": "Redis Cache",
+                    "kind": "service",
+                    "summary": "Caches hot player payloads",
+                    "proposal_note": "Avoids hitting external API on every request"
+                }
+            }
+        }),
+    );
+    assert!(prop_node_resp["result"]["isError"].is_null());
+
+    let prop_edge_resp = send_and_read(
+        &mut stdin,
+        &mut reader,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {
+                "name": "propose_edge",
+                "arguments": {
+                    "source": "api",
+                    "target": "cache",
+                    "label": "reads cache",
+                    "kind": "data_flow",
+                    "proposal_note": "Fast read path"
+                }
+            }
+        }),
+    );
+    assert!(prop_edge_resp["result"]["isError"].is_null());
+
+    let graph_after_prop = send_and_read(
+        &mut stdin,
+        &mut reader,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {
+                "name": "get_graph",
+                "arguments": {}
+            }
+        }),
+    );
+    let parsed_prop: Value = serde_json::from_str(
+        graph_after_prop["result"]["content"][0]["text"].as_str().unwrap(),
+    )
+    .unwrap();
+    let cache_node = parsed_prop["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == "cache")
+        .unwrap();
+    assert_eq!(cache_node["proposed"], true);
+    assert_eq!(
+        cache_node["proposal_note"],
+        "Avoids hitting external API on every request"
+    );
+    let cache_edge = parsed_prop["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == "e-api-cache")
+        .unwrap();
+    assert_eq!(cache_edge["proposed"], true);
 
     drop(stdin);
     let status = child.wait().unwrap();

@@ -1,9 +1,11 @@
 use bloxd_core::context::{compile_multi_node_context, compile_node_context};
 use bloxd_core::drift::{check_git_drift, mark_nodes_synced};
 use bloxd_core::{
-    auto_place_missing_nodes, init_or_open_project, load_graph, load_layout,
-    parse_checklist_progress, read_node_spec, save_graph, save_layout, write_node_spec,
-    BloxdError, Edge, EdgeKind, Node, NodeKind, NodeLayout, Status,
+    accept_all_proposals, accept_edge_proposal, accept_node_proposal, auto_place_missing_nodes,
+    init_or_open_project, load_graph, load_layout, parse_checklist_progress, read_node_spec,
+    reject_all_proposals, reject_edge_proposal, reject_node_proposal, save_graph, save_layout,
+    write_node_spec, BloxdError, Edge, EdgeKind, EdgeRoute, Node, NodeKind, NodeLayout, Point2D,
+    Status,
 };
 use std::process::Command;
 use tempfile::TempDir;
@@ -20,6 +22,8 @@ fn make_node(id: &str, title: &str, kind: NodeKind, parent_id: Option<&str>) -> 
         spec_file: Some(format!("specs/{id}.md")),
         constraints: vec![],
         synced_commit: None,
+        proposed: false,
+        proposal_note: None,
     }
 }
 
@@ -76,6 +80,8 @@ fn graph_and_layout_roundtrip() {
         target: "auth".to_string(),
         label: Some("delegates".to_string()),
         kind: EdgeKind::DataFlow,
+        proposed: false,
+        proposal_note: None,
     });
 
     save_graph(dir.path(), &snapshot.graph).unwrap();
@@ -153,6 +159,8 @@ fn compile_node_context_includes_parent_neighbors_children_constraints_and_spec(
         target: "worker".to_string(),
         label: Some("dispatches".to_string()),
         kind: EdgeKind::Triggers,
+        proposed: false,
+        proposal_note: None,
     });
     write_node_spec(dir.path(), "worker", "## Requirements\n- Retry 3 times.").unwrap();
 
@@ -221,6 +229,8 @@ fn multi_node_context_deduplicates_boundary_neighbors() {
             target: "ipc".into(),
             label: Some("calls".into()),
             kind: EdgeKind::DataFlow,
+            proposed: false,
+            proposal_note: None,
         },
         Edge {
             id: "e2".into(),
@@ -228,6 +238,8 @@ fn multi_node_context_deduplicates_boundary_neighbors() {
             target: "store".into(),
             label: None,
             kind: EdgeKind::Dependency,
+            proposed: false,
+            proposal_note: None,
         },
         Edge {
             id: "e3".into(),
@@ -235,6 +247,8 @@ fn multi_node_context_deduplicates_boundary_neighbors() {
             target: "store".into(),
             label: None,
             kind: EdgeKind::Dependency,
+            proposed: false,
+            proposal_note: None,
         },
     ];
 
@@ -275,4 +289,112 @@ fn git_drift_handles_non_git_and_git_repos() {
     let drifted = check_git_drift(dir.path(), &snapshot.graph);
     assert!(drifted.is_git_repo);
     assert_eq!(drifted.drifted.get("api").unwrap(), &vec!["src/api.rs".to_string()]);
+}
+
+#[test]
+fn proposals_accept_reject_and_incremental_unified_placement() {
+    let dir = TempDir::new().unwrap();
+    let mut snapshot = init_or_open_project(dir.path()).unwrap();
+
+    let api = make_node("api", "API", NodeKind::Service, None);
+    let mut cache = make_node("cache", "Redis Cache", NodeKind::Service, None);
+    cache.proposed = true;
+    cache.proposal_note = Some("Add response caching".into());
+    let mut worker = make_node("worker", "Worker", NodeKind::Service, None);
+    worker.proposed = true;
+
+    snapshot.graph.nodes = vec![api, cache, worker];
+    snapshot.graph.edges = vec![
+        Edge {
+            id: "e-api-cache".into(),
+            source: "api".into(),
+            target: "cache".into(),
+            label: Some("reads".into()),
+            kind: EdgeKind::DataFlow,
+            proposed: true,
+            proposal_note: Some("Cache hit path".into()),
+        },
+        Edge {
+            id: "e-api-worker".into(),
+            source: "api".into(),
+            target: "worker".into(),
+            label: None,
+            kind: EdgeKind::Triggers,
+            proposed: false,
+            proposal_note: None,
+        },
+    ];
+
+    // Seed unified_nodes for existing "api" node to verify incremental placement for incoming proposals
+    snapshot.layout.unified_nodes.insert(
+        "api".into(),
+        NodeLayout {
+            x: 100.0,
+            y: 100.0,
+            width: 260.0,
+            height: 136.0,
+            color: None,
+        },
+    );
+    snapshot.layout.unified_edge_routes.insert(
+        "e-api-worker".into(),
+        EdgeRoute {
+            points: vec![Point2D { x: 0.0, y: 0.0 }, Point2D { x: 100.0, y: 0.0 }],
+            label_pos: None,
+            source_side: "right".into(),
+            target_side: "left".into(),
+        },
+    );
+
+    assert!(auto_place_missing_nodes(&snapshot.graph, &mut snapshot.layout));
+    assert!(snapshot.layout.nodes.contains_key("cache"));
+    assert!(snapshot.layout.unified_nodes.contains_key("cache"));
+    assert_eq!(snapshot.layout.unified_nodes["api"].x, 100.0);
+
+    // Rejecting proposed node "worker" deletes dangling edge "e-api-worker" and prunes its route
+    assert!(reject_node_proposal(&mut snapshot.graph, Some(&mut snapshot.layout), "worker"));
+    assert!(snapshot.graph.nodes.iter().all(|n| n.id != "worker"));
+    assert!(snapshot.graph.edges.iter().all(|e| e.id != "e-api-worker"));
+    assert!(!snapshot.layout.unified_edge_routes.contains_key("e-api-worker"));
+
+    // Accept single node + edge, and test single edge rejection
+    assert!(accept_node_proposal(&mut snapshot.graph, "cache"));
+    assert!(accept_edge_proposal(&mut snapshot.graph, "e-api-cache"));
+    assert!(!snapshot.graph.nodes.iter().find(|n| n.id == "cache").unwrap().proposed);
+    assert!(!snapshot.graph.edges[0].proposed);
+
+    snapshot.graph.edges.push(Edge {
+        id: "e-cache-api".into(),
+        source: "cache".into(),
+        target: "api".into(),
+        label: None,
+        kind: EdgeKind::DataFlow,
+        proposed: true,
+        proposal_note: None,
+    });
+    assert!(reject_edge_proposal(&mut snapshot.graph, Some(&mut snapshot.layout), "e-cache-api"));
+    assert!(snapshot.graph.edges.iter().all(|e| e.id != "e-cache-api"));
+
+    // Bulk accept & reject
+    let mut temp_node = make_node("temp", "Temp", NodeKind::Module, None);
+    temp_node.proposed = true;
+    snapshot.graph.nodes.push(temp_node);
+    assert_eq!(accept_all_proposals(&mut snapshot.graph), 1);
+    assert!(!snapshot.graph.nodes.iter().find(|n| n.id == "temp").unwrap().proposed);
+
+    let mut temp2 = make_node("temp2", "Temp2", NodeKind::Module, None);
+    temp2.proposed = true;
+    snapshot.graph.nodes.push(temp2);
+    snapshot.graph.edges.push(Edge {
+        id: "e-t2".into(),
+        source: "api".into(),
+        target: "temp2".into(),
+        label: None,
+        kind: EdgeKind::Dependency,
+        proposed: true,
+        proposal_note: None,
+    });
+    assert_eq!(reject_all_proposals(&mut snapshot.graph, Some(&mut snapshot.layout)), 2);
+    assert!(snapshot.graph.nodes.iter().all(|n| n.id != "temp2"));
+    assert!(snapshot.graph.edges.iter().all(|e| e.id != "e-t2"));
 }
