@@ -141,16 +141,41 @@ pub struct LabelOffset {
     pub y: f64,
 }
 
+/// 2D point in canvas world coordinates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct Point2D {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Precomputed ELK orthogonal edge polyline & label anchor for `.bloxd/layout.json`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct EdgeRoute {
+    pub points: Vec<Point2D>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_pos: Option<Point2D>,
+    pub source_side: String,
+    pub target_side: String,
+}
+
 /// Visual-only layout state stored in `.bloxd/layout.json` (ignored by coding agents).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct Layout {
     pub version: u32,
     #[serde(default)]
     pub nodes: BTreeMap<String, NodeLayout>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unified_nodes: BTreeMap<String, NodeLayout>,
     #[serde(default)]
     pub viewports: BTreeMap<String, Viewport>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub edge_labels: BTreeMap<String, LabelOffset>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unified_edge_labels: BTreeMap<String, LabelOffset>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub edge_routes: BTreeMap<String, EdgeRoute>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unified_edge_routes: BTreeMap<String, EdgeRoute>,
 }
 
 impl Default for Layout {
@@ -167,8 +192,12 @@ impl Default for Layout {
         Self {
             version: 1,
             nodes: BTreeMap::new(),
+            unified_nodes: BTreeMap::new(),
             viewports,
             edge_labels: BTreeMap::new(),
+            unified_edge_labels: BTreeMap::new(),
+            edge_routes: BTreeMap::new(),
+            unified_edge_routes: BTreeMap::new(),
         }
     }
 }

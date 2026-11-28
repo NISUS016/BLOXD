@@ -6,6 +6,7 @@ import {
   commands,
   DriftReport,
   EdgeKind,
+  EdgeRoute,
   Graph,
   Layout,
   NodeKind,
@@ -17,6 +18,7 @@ import {
   computeElkLayout,
   computeElkHierarchicalLayout,
   computeFallbackGridLayout,
+  computeUnifiedContainerSizes,
   LayoutDirection,
 } from "../canvas/layout";
 
@@ -180,6 +182,38 @@ function collectDescendants(nodes: BloxdNode[], rootId: string): Set<string> {
     }
   }
   return toDelete;
+}
+
+/**
+ * Removes stored ELK edge routes connected to a moved/resized node (and optionally its descendants)
+ * so only affected edges fall back cleanly to dynamic handle + bypass routing.
+ */
+function invalidateRoutesForNode(
+  routes: Record<string, EdgeRoute> | undefined,
+  graph: Graph,
+  nodeId: string,
+  includeDescendants: boolean
+): Record<string, EdgeRoute> {
+  if (!routes) return {};
+  const affected = includeDescendants
+    ? collectDescendants(graph.nodes, nodeId)
+    : new Set<string>([nodeId]);
+  const next = { ...routes };
+
+  for (const e of graph.edges) {
+    if (affected.has(e.source) || affected.has(e.target)) {
+      delete next[e.id];
+    }
+  }
+  for (const routeId of Object.keys(next)) {
+    if (routeId.startsWith("rollup-")) {
+      const [src, dst] = routeId.slice("rollup-".length).split("->");
+      if (affected.has(src) || affected.has(dst)) {
+        delete next[routeId];
+      }
+    }
+  }
+  return next;
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => {
@@ -572,6 +606,10 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         (n) => (n.parent_id ?? null) === resolvedParent
       );
       const slot = findFreeSlot(siblings, layout);
+      const unifiedSlot =
+        layout.unified_nodes && Object.keys(layout.unified_nodes).length > 0
+          ? findFreeSlot(siblings, { ...layout, nodes: layout.unified_nodes })
+          : null;
 
       const nextGraph: Graph = {
         ...graph,
@@ -579,17 +617,31 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         nodes: [...graph.nodes, newNode],
       };
 
+      const nextNodeRect = {
+        x: slot.x,
+        y: slot.y,
+        width: 260,
+        height: 136,
+      };
       const nextLayout: Layout = {
         ...layout,
         nodes: {
           ...layout.nodes,
-          [id]: {
-            x: slot.x,
-            y: slot.y,
-            width: 260,
-            height: 136,
-          },
+          [id]: nextNodeRect,
         },
+        ...(unifiedSlot
+          ? {
+              unified_nodes: {
+                ...layout.unified_nodes,
+                [id]: {
+                  x: unifiedSlot.x,
+                  y: unifiedSlot.y,
+                  width: 260,
+                  height: 136,
+                },
+              },
+            }
+          : {}),
       };
 
       set({
@@ -630,15 +682,33 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       ].slice(-MAX_UNDO_HISTORY);
 
       const toDelete = collectDescendants(graph.nodes, id);
-      const nextNodes = graph.nodes.filter((n) => !toDelete.has(n.id));
-      const nextEdges = graph.edges.filter(
-        (e) => !toDelete.has(e.source) && !toDelete.has(e.target)
+      const removedEdgeIds = new Set(
+        graph.edges
+          .filter((e) => toDelete.has(e.source) || toDelete.has(e.target))
+          .map((e) => e.id)
       );
+      const nextNodes = graph.nodes.filter((n) => !toDelete.has(n.id));
+      const nextEdges = graph.edges.filter((e) => !removedEdgeIds.has(e.id));
 
       const nextLayoutNodes = { ...layout.nodes };
+      const nextUnifiedNodes = layout.unified_nodes ? { ...layout.unified_nodes } : undefined;
       for (const delId of toDelete) {
         delete nextLayoutNodes[delId];
+        if (nextUnifiedNodes) delete nextUnifiedNodes[delId];
       }
+
+      const pruneEdgeMap = <T,>(map: Record<string, T> | undefined): Record<string, T> | undefined => {
+        if (!map) return undefined;
+        const next = { ...map };
+        for (const eid of removedEdgeIds) delete next[eid];
+        for (const k of Object.keys(next)) {
+          if (k.startsWith("rollup-")) {
+            const [s, t] = k.slice("rollup-".length).split("->");
+            if (toDelete.has(s) || toDelete.has(t)) delete next[k];
+          }
+        }
+        return next;
+      };
 
       const nextParent =
         currentParentId && toDelete.has(currentParentId)
@@ -655,6 +725,11 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         layout: {
           ...layout,
           nodes: nextLayoutNodes,
+          unified_nodes: nextUnifiedNodes,
+          edge_labels: pruneEdgeMap(layout.edge_labels),
+          unified_edge_labels: pruneEdgeMap(layout.unified_edge_labels),
+          edge_routes: pruneEdgeMap(layout.edge_routes),
+          unified_edge_routes: pruneEdgeMap(layout.unified_edge_routes),
         },
         undoStack: nextUndo,
         redoStack: [],
@@ -709,23 +784,45 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         ...undoStack,
         { graph: structuredClone(graph), layout: structuredClone(layout) },
       ].slice(-MAX_UNDO_HISTORY);
+      const nextEdgeLabels = { ...(layout.edge_labels ?? {}) };
+      const nextUnifiedLabels = { ...(layout.unified_edge_labels ?? {}) };
+      const nextEdgeRoutes = { ...(layout.edge_routes ?? {}) };
+      const nextUnifiedRoutes = { ...(layout.unified_edge_routes ?? {}) };
+      delete nextEdgeLabels[id];
+      delete nextUnifiedLabels[id];
+      delete nextEdgeRoutes[id];
+      delete nextUnifiedRoutes[id];
+
       set({
         graph: {
           ...graph,
           updated_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
           edges: graph.edges.filter((e) => e.id !== id),
         },
+        layout: {
+          ...layout,
+          edge_labels: nextEdgeLabels,
+          unified_edge_labels: nextUnifiedLabels,
+          edge_routes: nextEdgeRoutes,
+          unified_edge_routes: nextUnifiedRoutes,
+        },
         undoStack: nextUndo,
         redoStack: [],
         selectedEdgeId: selectedEdgeId === id ? null : selectedEdgeId,
       });
       scheduleSaveGraph();
+      scheduleSaveLayout();
     },
 
     updateNodeLayout: (id, patch) => {
-      const { graph, layout, undoStack } = get();
+      const { graph, layout, viewMode, undoStack } = get();
       if (!graph || !layout) return;
-      const current = layout.nodes[id] ?? {
+      const isUnified = viewMode === "unified";
+      const activeNodes = isUnified
+        ? { ...layout.nodes, ...(layout.unified_nodes ?? {}) }
+        : layout.nodes;
+
+      const current = activeNodes[id] ?? {
         x: 100,
         y: 100,
         width: 260,
@@ -743,24 +840,57 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         ...undoStack,
         { graph: structuredClone(graph), layout: structuredClone(layout) },
       ].slice(-MAX_UNDO_HISTORY);
-      set({
-        layout: {
-          ...layout,
-          nodes: {
-            ...layout.nodes,
-            [id]: { ...current, ...patch },
+
+      const updatedEntry = { ...current, ...patch };
+      if (isUnified) {
+        const nextRoutes = invalidateRoutesForNode(
+          layout.unified_edge_routes,
+          graph,
+          id,
+          true
+        );
+        set({
+          layout: {
+            ...layout,
+            unified_nodes: {
+              ...activeNodes,
+              [id]: updatedEntry,
+            },
+            unified_edge_routes: nextRoutes,
           },
-        },
-        undoStack: nextUndo,
-        redoStack: [],
-      });
+          undoStack: nextUndo,
+          redoStack: [],
+        });
+      } else {
+        const nextRoutes = invalidateRoutesForNode(
+          layout.edge_routes,
+          graph,
+          id,
+          false
+        );
+        set({
+          layout: {
+            ...layout,
+            nodes: {
+              ...layout.nodes,
+              [id]: updatedEntry,
+            },
+            edge_routes: nextRoutes,
+          },
+          undoStack: nextUndo,
+          redoStack: [],
+        });
+      }
       scheduleSaveLayout();
     },
 
     updateEdgeLabelOffset: (edgeId, offset) => {
-      const { layout } = get();
+      const { layout, viewMode } = get();
       if (!layout) return;
-      const nextLabels = { ...(layout.edge_labels ?? {}) };
+      const isUnified = viewMode === "unified";
+      const nextLabels = {
+        ...((isUnified ? layout.unified_edge_labels : layout.edge_labels) ?? {}),
+      };
       if (offset === null) {
         delete nextLabels[edgeId];
       } else {
@@ -772,7 +902,9 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       set({
         layout: {
           ...layout,
-          edge_labels: nextLabels,
+          ...(isUnified
+            ? { unified_edge_labels: nextLabels }
+            : { edge_labels: nextLabels }),
         },
       });
       scheduleSaveLayout();
@@ -812,7 +944,6 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       ].slice(-MAX_UNDO_HISTORY);
 
       const dir = direction ?? layoutDirection;
-      const nextNodesLayout = { ...layout.nodes };
 
       if (viewMode === "nested") {
         const layerNodes = graph.nodes.filter(
@@ -820,7 +951,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         );
         if (layerNodes.length === 0) return;
 
-        // Build direct + rolled-up edges with accurate aggregated labels so ELK reserves space for every pill
+        const nextNodesLayout = { ...layout.nodes };
         const visibleIds = new Set(layerNodes.map((n) => n.id));
         const byId = new Map(graph.nodes.map((n) => [n.id, n]));
         const findVisibleAncestor = (id: string): string | null => {
@@ -834,10 +965,11 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           return null;
         };
 
+        const directEdgesInLayer = graph.edges.filter(
+          (e) => visibleIds.has(e.source) && visibleIds.has(e.target)
+        );
         const directPairSet = new Set(
-          graph.edges
-            .filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target))
-            .map((e) => `${e.source}->${e.target}`)
+          directEdgesInLayer.map((e) => `${e.source}->${e.target}`)
         );
         const rolledBuckets = new Map<
           string,
@@ -860,12 +992,10 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           rolledBuckets.set(pk, entry);
         }
 
-        const layoutEdges: BloxdEdge[] = [
-          ...graph.edges.filter(
-            (e) => visibleIds.has(e.source) && visibleIds.has(e.target)
-          ),
-          ...[...rolledBuckets.entries()].map(([pk, info]) => ({
-            id: `virt-${pk}`,
+        // Use exact `rollup-${pk}` IDs so stored ELK routes match ArchitectureCanvas edge IDs
+        const rolledEdgesForElk: BloxdEdge[] = [...rolledBuckets.entries()].map(
+          ([pk, info]) => ({
+            id: `rollup-${pk}`,
             source: info.source,
             target: info.target,
             label:
@@ -873,8 +1003,24 @@ export const useProjectStore = create<ProjectState>((set, get) => {
                 ? info.labels[0]
                 : `${info.labels.length || 1} links`,
             kind: info.kind,
-          })),
-        ];
+          })
+        );
+        const layoutEdges: BloxdEdge[] = [...directEdgesInLayer, ...rolledEdgesForElk];
+
+        // Clear routes & label overrides only for the current Nested layer
+        const layerEdgeIds = new Set(layoutEdges.map((e) => e.id));
+        const nextEdgeRoutes = { ...(layout.edge_routes ?? {}) };
+        const nextEdgeLabels = { ...(layout.edge_labels ?? {}) };
+        for (const eid of layerEdgeIds) {
+          delete nextEdgeRoutes[eid];
+          delete nextEdgeLabels[eid];
+        }
+        for (const k of Object.keys(nextEdgeRoutes)) {
+          if (k.startsWith("rollup-")) {
+            const [s, t] = k.slice("rollup-".length).split("->");
+            if (visibleIds.has(s) && visibleIds.has(t)) delete nextEdgeRoutes[k];
+          }
+        }
 
         try {
           const elkResult = await computeElkLayout(
@@ -892,9 +1038,18 @@ export const useProjectStore = create<ProjectState>((set, get) => {
             };
             nextNodesLayout[id] = { ...prev, x: pos.x, y: pos.y };
           }
+          for (const [eid, route] of Object.entries(elkResult.edgeRoutes)) {
+            nextEdgeRoutes[eid] = route;
+          }
         } catch (err) {
           console.warn("ELK layout failed, falling back to grid:", err);
-          const positions = computeFallbackGridLayout(layerNodes, dir);
+          const positions = computeFallbackGridLayout(
+            layerNodes,
+            dir,
+            60,
+            undefined,
+            nextNodesLayout
+          );
           for (const [id, pos] of Object.entries(positions)) {
             const prev = nextNodesLayout[id] ?? {
               x: pos.x,
@@ -905,26 +1060,55 @@ export const useProjectStore = create<ProjectState>((set, get) => {
             nextNodesLayout[id] = { ...prev, x: pos.x, y: pos.y };
           }
         }
+
+        set({
+          layoutDirection: dir,
+          layout: {
+            ...layout,
+            nodes: nextNodesLayout,
+            edge_labels: nextEdgeLabels,
+            edge_routes: nextEdgeRoutes,
+          },
+          undoStack: nextUndo,
+          redoStack: [],
+        });
       } else {
-        // Unified mode: ELK compound hierarchical layout
+        // Unified mode: isolate positions, routes, and labels cleanly from Nested mode
+        const nextUnifiedNodes = {
+          ...layout.nodes,
+          ...(layout.unified_nodes ?? {}),
+        };
+        let nextUnifiedRoutes: Record<string, EdgeRoute> = {};
+
         try {
           const elkResult = await computeElkHierarchicalLayout(
             graph.nodes,
             graph.edges,
             dir,
-            nextNodesLayout
+            nextUnifiedNodes
           );
           for (const [id, pos] of Object.entries(elkResult.nodePositions)) {
-            const prev = nextNodesLayout[id] ?? {
+            const prev = nextUnifiedNodes[id] ?? {
               x: pos.x,
               y: pos.y,
               width: 260,
               height: 136,
             };
-            nextNodesLayout[id] = { ...prev, x: pos.x, y: pos.y };
+            nextUnifiedNodes[id] = { ...prev, x: pos.x, y: pos.y };
           }
+          nextUnifiedRoutes = elkResult.edgeRoutes;
         } catch (err) {
           console.warn("ELK hierarchical layout failed, falling back:", err);
+          // Size-aware bottom-up fallback: children first, then measure containers, then place roots
+          const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+          const depthOf = (id: string, seen = new Set<string>()): number => {
+            if (seen.has(id)) return 0;
+            seen.add(id);
+            const n = byId.get(id);
+            return n?.parent_id && byId.has(n.parent_id)
+              ? 1 + depthOf(n.parent_id, seen)
+              : 0;
+          };
           const groupsByParent = new Map<string | null, BloxdNode[]>();
           for (const n of graph.nodes) {
             const key = n.parent_id ?? null;
@@ -932,36 +1116,49 @@ export const useProjectStore = create<ProjectState>((set, get) => {
             list.push(n);
             groupsByParent.set(key, list);
           }
-          for (const [parentKey, layerNodes] of groupsByParent.entries()) {
+          const parentKeys = [...groupsByParent.keys()].sort((a, b) => {
+            const da = a === null ? -1 : depthOf(a);
+            const db = b === null ? -1 : depthOf(b);
+            return db - da;
+          });
+          for (const parentKey of parentKeys) {
+            const layerNodes = groupsByParent.get(parentKey) ?? [];
+            const containerSizes =
+              parentKey === null
+                ? computeUnifiedContainerSizes(graph.nodes, nextUnifiedNodes)
+                : undefined;
             const positions = computeFallbackGridLayout(
               layerNodes,
               dir,
-              parentKey === null ? 50 : 112
+              parentKey === null ? 50 : 112,
+              containerSizes,
+              nextUnifiedNodes
             );
             for (const [id, pos] of Object.entries(positions)) {
-              const prev = nextNodesLayout[id] ?? {
+              const prev = nextUnifiedNodes[id] ?? {
                 x: pos.x,
                 y: pos.y,
                 width: 260,
                 height: 136,
               };
-              nextNodesLayout[id] = { ...prev, x: pos.x, y: pos.y };
+              nextUnifiedNodes[id] = { ...prev, x: pos.x, y: pos.y };
             }
           }
         }
+
+        set({
+          layoutDirection: dir,
+          layout: {
+            ...layout,
+            unified_nodes: nextUnifiedNodes,
+            unified_edge_labels: {},
+            unified_edge_routes: nextUnifiedRoutes,
+          },
+          undoStack: nextUndo,
+          redoStack: [],
+        });
       }
 
-      // Clear saved manual label overrides so the dynamic collision-free router places every label cleanly
-      set({
-        layoutDirection: dir,
-        layout: {
-          ...layout,
-          nodes: nextNodesLayout,
-          edge_labels: {},
-        },
-        undoStack: nextUndo,
-        redoStack: [],
-      });
       scheduleSaveLayout();
       triggerToast(`Auto-layout applied (${dir})`, "info");
     },
@@ -980,11 +1177,12 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
       const nextNodesLayout = { ...layout.nodes };
       if (missing.length === layerNodes.length) {
-        // Place spacious fallback synchronously, then refine asynchronously with ELK
         const positions = computeFallbackGridLayout(
           layerNodes,
           layoutDirection,
-          parentId === null ? 60 : 112
+          parentId === null ? 60 : 112,
+          undefined,
+          nextNodesLayout
         );
         for (const [id, pos] of Object.entries(positions)) {
           nextNodesLayout[id] = {
@@ -1006,15 +1204,21 @@ export const useProjectStore = create<ProjectState>((set, get) => {
             const curLayout = get().layout;
             if (!curLayout) return;
             const refined = { ...curLayout.nodes };
+            const refinedRoutes = { ...(curLayout.edge_routes ?? {}) };
             for (const [id, pos] of Object.entries(elkResult.nodePositions)) {
               const prev = refined[id] ?? { x: pos.x, y: pos.y, width: 260, height: 136 };
               refined[id] = { ...prev, x: pos.x, y: pos.y };
             }
-            set({ layout: { ...curLayout, nodes: refined } });
+            for (const [eid, route] of Object.entries(elkResult.edgeRoutes)) {
+              refinedRoutes[eid] = route;
+            }
+            set({
+              layout: { ...curLayout, nodes: refined, edge_routes: refinedRoutes },
+            });
             scheduleSaveLayout();
           })
           .catch(() => {
-            // Keep grid fallback silently
+            // Keep size-aware grid fallback silently
           });
       } else {
         // Partial addition: place only missing nodes without disturbing existing positions.

@@ -1,5 +1,5 @@
 import ELK, { ElkNode, ElkExtendedEdge } from "elkjs/lib/elk.bundled.js";
-import { BloxdEdge, BloxdNode, NodeLayout } from "../bindings";
+import { BloxdEdge, BloxdNode, EdgeRoute, HandleSide, NodeLayout, Point2D } from "../bindings";
 
 export type LayoutDirection = "LR" | "TB";
 
@@ -24,6 +24,123 @@ const elk = new ELK();
 export interface ElkLayoutResult {
   nodePositions: Record<string, { x: number; y: number }>;
   containerSizes?: Record<string, { width: number; height: number }>;
+  edgeRoutes: Record<string, EdgeRoute>;
+}
+
+interface BoxRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Infers which node border ("top" | "bottom" | "left" | "right") an ELK port/endpoint touches.
+ */
+function inferHandleSide(pt: Point2D, box?: BoxRect): HandleSide {
+  if (!box) return "right";
+  const dLeft = Math.abs(pt.x - box.x);
+  const dRight = Math.abs(pt.x - (box.x + box.width));
+  const dTop = Math.abs(pt.y - box.y);
+  const dBottom = Math.abs(pt.y - (box.y + box.height));
+  const min = Math.min(dLeft, dRight, dTop, dBottom);
+  if (min === dTop) return "top";
+  if (min === dBottom) return "bottom";
+  if (min === dLeft) return "left";
+  return "right";
+}
+
+/**
+ * Extracts node positions (local to each parent) plus world-coordinate ELK edge routes & label anchors.
+ */
+function extractElkResult(result: ElkNode): ElkLayoutResult {
+  const nodePositions: Record<string, { x: number; y: number }> = {};
+  const containerSizes: Record<string, { width: number; height: number }> = {};
+  const worldRects = new Map<string, BoxRect>();
+  const edgeRoutes: Record<string, EdgeRoute> = {};
+
+  const collectNodes = (elkNode: ElkNode, parentWorldX: number, parentWorldY: number) => {
+    if (!elkNode.children) return;
+    for (const child of elkNode.children) {
+      const lx = Math.round(child.x ?? 0);
+      const ly = Math.round(child.y ?? 0);
+      const wx = parentWorldX + lx;
+      const wy = parentWorldY + ly;
+      const w = Math.round(child.width ?? DEFAULT_WIDTH);
+      const h = Math.round(child.height ?? DEFAULT_HEIGHT);
+
+      nodePositions[child.id] = { x: lx, y: ly };
+      worldRects.set(child.id, { x: wx, y: wy, width: w, height: h });
+
+      if (child.children && child.children.length > 0) {
+        if (child.width && child.height) {
+          containerSizes[child.id] = { width: w, height: h };
+        }
+        collectNodes(child, wx, wy);
+      }
+    }
+  };
+
+  const collectRoutes = (elkNode: ElkNode, parentWorldX: number, parentWorldY: number) => {
+    if (elkNode.edges) {
+      for (const edge of elkNode.edges as ElkExtendedEdge[]) {
+        const section = edge.sections?.[0];
+        if (!section) continue;
+
+        const rawPts = [
+          section.startPoint,
+          ...(section.bendPoints ?? []),
+          section.endPoint,
+        ];
+        const points: Point2D[] = rawPts.map((p) => ({
+          x: Math.round(parentWorldX + p.x),
+          y: Math.round(parentWorldY + p.y),
+        }));
+        if (points.length < 2) continue;
+
+        let labelPos: Point2D | null = null;
+        const lbl = edge.labels?.[0];
+        if (lbl && lbl.x !== undefined && lbl.y !== undefined) {
+          labelPos = {
+            x: Math.round(parentWorldX + lbl.x + (lbl.width ?? 0) / 2),
+            y: Math.round(parentWorldY + lbl.y + (lbl.height ?? 0) / 2),
+          };
+        }
+
+        const srcId = edge.sources?.[0];
+        const dstId = edge.targets?.[0];
+        edgeRoutes[edge.id] = {
+          points,
+          label_pos: labelPos,
+          source_side: inferHandleSide(points[0], srcId ? worldRects.get(srcId) : undefined),
+          target_side: inferHandleSide(
+            points[points.length - 1],
+            dstId ? worldRects.get(dstId) : undefined
+          ),
+        };
+      }
+    }
+
+    if (elkNode.children) {
+      for (const child of elkNode.children) {
+        if (child.children && child.children.length > 0) {
+          const wr = worldRects.get(child.id);
+          const wx = wr ? wr.x : parentWorldX + Math.round(child.x ?? 0);
+          const wy = wr ? wr.y : parentWorldY + Math.round(child.y ?? 0);
+          collectRoutes(child, wx, wy);
+        }
+      }
+    }
+  };
+
+  collectNodes(result, 0, 0);
+  collectRoutes(result, 0, 0);
+
+  return {
+    nodePositions,
+    containerSizes: Object.keys(containerSizes).length > 0 ? containerSizes : undefined,
+    edgeRoutes,
+  };
 }
 
 /**
@@ -104,18 +221,7 @@ export async function computeElkLayout(
   };
 
   const result = await elk.layout(graph);
-
-  const nodePositions: Record<string, { x: number; y: number }> = {};
-  if (result.children) {
-    for (const child of result.children) {
-      nodePositions[child.id] = {
-        x: Math.round(child.x ?? 0),
-        y: Math.round(child.y ?? 0),
-      };
-    }
-  }
-
-  return { nodePositions };
+  return extractElkResult(result);
 }
 
 /**
@@ -139,7 +245,6 @@ export async function computeElkHierarchicalLayout(
     childrenByParent.set(key, list);
   }
 
-  // Ancestor chain from root -> ... -> parent_id -> id
   const getAncestors = (id: string): string[] => {
     const chain: string[] = [];
     let cur: string | null | undefined = id;
@@ -152,7 +257,6 @@ export async function computeElkHierarchicalLayout(
     return chain.reverse();
   };
 
-  // Group every edge under its Lowest Common Ancestor container (null = root)
   const edgesByLca = new Map<string | null, ElkExtendedEdge[]>();
   const seenPairs = new Set<string>();
 
@@ -165,7 +269,6 @@ export async function computeElkHierarchicalLayout(
     const srcChain = getAncestors(e.source);
     const dstChain = getAncestors(e.target);
 
-    // Skip direct ancestor <-> descendant self-containment edges in ELK hierarchy
     if (srcChain.includes(e.target) || dstChain.includes(e.source)) continue;
 
     let lca: string | null = null;
@@ -263,30 +366,7 @@ export async function computeElkHierarchicalLayout(
   };
 
   const result = await elk.layout(graph);
-
-  const nodePositions: Record<string, { x: number; y: number }> = {};
-  const containerSizes: Record<string, { width: number; height: number }> = {};
-
-  const extractPositions = (elkNode: ElkNode) => {
-    if (!elkNode.children) return;
-    for (const child of elkNode.children) {
-      nodePositions[child.id] = {
-        x: Math.round(child.x ?? 0),
-        y: Math.round(child.y ?? 0),
-      };
-      if (child.children && child.children.length > 0 && child.width && child.height) {
-        containerSizes[child.id] = {
-          width: Math.round(child.width),
-          height: Math.round(child.height),
-        };
-        extractPositions(child);
-      }
-    }
-  };
-
-  extractPositions(result);
-
-  return { nodePositions, containerSizes };
+  return extractElkResult(result);
 }
 
 /**
@@ -357,25 +437,42 @@ export function computeUnifiedContainerSizes(
 }
 
 /**
- * Synchronous spacious grid fallback used only before ELK resolves on brand-new layers.
+ * Size-aware synchronous grid fallback so even large Unified containers never overlap
+ * if ELK is unavailable or before an async ELK pass resolves.
  */
 export function computeFallbackGridLayout(
   nodes: BloxdNode[],
   direction: LayoutDirection,
-  marginTop = 60
+  marginTop = 60,
+  sizes?: Record<string, { width: number; height: number }>,
+  existingLayout?: Record<string, NodeLayout>
 ): Record<string, { x: number; y: number }> {
   const result: Record<string, { x: number; y: number }> = {};
-  const cols = Math.max(2, Math.min(4, Math.ceil(Math.sqrt(nodes.length))));
-  const gapX = direction === "LR" ? 380 : 340;
-  const gapY = direction === "LR" ? 210 : 220;
+  if (nodes.length === 0) return result;
+
+  const cols = direction === "LR" ? Math.max(2, Math.min(4, Math.ceil(Math.sqrt(nodes.length)))) : Math.max(1, Math.min(3, Math.ceil(Math.sqrt(nodes.length))));
+  const gap = 80;
+  const startX = 50;
+
+  let curX = startX;
+  let curY = marginTop;
+  let rowMaxH = 0;
 
   nodes.forEach((n, i) => {
     const col = i % cols;
-    const row = Math.floor(i / cols);
-    result[n.id] = {
-      x: 50 + col * gapX,
-      y: marginTop + row * gapY,
-    };
+    if (col === 0 && i > 0) {
+      curX = startX;
+      curY += rowMaxH + gap;
+      rowMaxH = 0;
+    }
+
+    const s = sizes?.[n.id] ?? existingLayout?.[n.id];
+    const w = Math.max(s?.width ?? DEFAULT_WIDTH, DEFAULT_WIDTH);
+    const h = Math.max(s?.height ?? DEFAULT_HEIGHT, DEFAULT_HEIGHT);
+
+    result[n.id] = { x: Math.round(curX), y: Math.round(curY) };
+    curX += w + gap;
+    rowMaxH = Math.max(rowMaxH, h);
   });
 
   return result;

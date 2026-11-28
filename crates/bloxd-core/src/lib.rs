@@ -6,8 +6,8 @@ pub mod storage;
 pub mod watcher;
 
 pub use model::{
-    ChecklistProgress, DriftReport, Edge, EdgeKind, Graph, LabelOffset, Layout, Node, NodeKind,
-    NodeLayout, ProjectSnapshot, Status, Viewport,
+    ChecklistProgress, DriftReport, Edge, EdgeKind, EdgeRoute, Graph, LabelOffset, Layout, Node,
+    NodeKind, NodeLayout, Point2D, ProjectSnapshot, Status, Viewport,
 };
 pub use storage::{
     auto_place_missing_nodes, compute_project_checklists, init_or_open_project, load_graph,

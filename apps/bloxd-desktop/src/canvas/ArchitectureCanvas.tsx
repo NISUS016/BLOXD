@@ -210,13 +210,17 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
       const hasChildren = new Set(
         graph.nodes.map((n) => n.parent_id).filter(Boolean) as string[]
       );
+      const effectiveUnifiedNodes: Record<string, typeof layout.nodes[string]> = {
+        ...layout.nodes,
+        ...(layout.unified_nodes ?? {}),
+      };
       const containerSizes = computeUnifiedContainerSizes(
         graph.nodes,
-        layout.nodes
+        effectiveUnifiedNodes
       );
 
       const nextNodes: Node[] = ordered.map((n, index) => {
-        const saved = layout.nodes[n.id];
+        const saved = effectiveUnifiedNodes[n.id];
         const stats = childStats.get(n.id) ?? { total: 0, done: 0 };
         const isContainer = hasChildren.has(n.id);
         const size = containerSizes[n.id] ?? {
@@ -267,36 +271,18 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
     });
   }, [graph, layout, layerKey, setViewport, fitView]);
 
-  // Auto-arrange Unified view once when switching into Unified mode if root containers overlap
+  // In Unified mode, only run ELK auto-layout once when unified_nodes is missing or incomplete
   const lastUnifiedLayoutProjectRef = useRef<string | null>(null);
   useEffect(() => {
     if (!graph || !layout || viewMode !== "unified") return;
+    const unifiedNodes = layout.unified_nodes ?? {};
+    const hasAllNodes = graph.nodes.every((n) => Boolean(unifiedNodes[n.id]));
+    if (hasAllNodes) return;
+
     const key = `${graph.project}:${graph.nodes.length}`;
     if (lastUnifiedLayoutProjectRef.current === key) return;
     lastUnifiedLayoutProjectRef.current = key;
-
-    // Check if any root-level nodes overlap after container expansion
-    const containerSizes = computeUnifiedContainerSizes(graph.nodes, layout.nodes);
-    const roots = graph.nodes.filter((n) => (n.parent_id ?? null) === null);
-    let hasOverlap = false;
-    for (let i = 0; i < roots.length && !hasOverlap; i++) {
-      for (let j = i + 1; j < roots.length; j++) {
-        const aPos = layout.nodes[roots[i].id];
-        const bPos = layout.nodes[roots[j].id];
-        if (!aPos || !bPos) continue;
-        const aSize = containerSizes[roots[i].id] ?? aPos;
-        const bSize = containerSizes[roots[j].id] ?? bPos;
-        const overlapX = aPos.x < bPos.x + bSize.width && aPos.x + aSize.width > bPos.x;
-        const overlapY = aPos.y < bPos.y + bSize.height && aPos.y + aSize.height > bPos.y;
-        if (overlapX && overlapY) {
-          hasOverlap = true;
-          break;
-        }
-      }
-    }
-    if (hasOverlap) {
-      useProjectStore.getState().autoLayoutCurrentLayer();
-    }
+    useProjectStore.getState().autoLayoutCurrentLayer();
   }, [graph, layout, viewMode]);
 
   const rfEdges: Edge[] = useMemo(() => {
@@ -499,6 +485,11 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
       strokeDasharray?: string;
     }
 
+    const activeEdgeLabels =
+      viewMode === "unified" ? layout?.unified_edge_labels : layout?.edge_labels;
+    const activeEdgeRoutes =
+      viewMode === "unified" ? layout?.unified_edge_routes : layout?.edge_routes;
+
     const pendingSpecs: PendingEdgeSpec[] = [];
     const rawDirect = graph.edges.filter(
       (e) => visibleIds.has(e.source) && visibleIds.has(e.target)
@@ -511,20 +502,23 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
         inProgressIds.has(e.source) || inProgressIds.has(e.target);
       const hasReverse = directPairSet.has(`${e.target}->${e.source}`);
       const isReverseSecond = hasReverse && e.source > e.target;
-      const { sourceHandle, targetHandle, curveOffset } = pickHandles(
-        e.source,
-        e.target,
-        hasReverse,
-        isReverseSecond
-      );
+      const storedRoute = activeEdgeRoutes?.[e.id];
+      const { sourceHandle, targetHandle, curveOffset } = storedRoute
+        ? {
+            sourceHandle: storedRoute.source_side,
+            targetHandle: storedRoute.target_side,
+            curveOffset: 0,
+          }
+        : pickHandles(e.source, e.target, hasReverse, isReverseSecond);
       const corridorKey = `${[e.source, e.target].sort().join("|")}:${sourceHandle}:${targetHandle}`;
       const seenCount = corridorCounts.get(corridorKey) ?? 0;
       corridorCounts.set(corridorKey, seenCount + 1);
-      const staggeredOffset =
-        curveOffset +
-        (seenCount === 0
-          ? 0
-          : (seenCount % 2 === 1 ? 1 : -1) * Math.ceil(seenCount / 2) * 1.1);
+      const staggeredOffset = storedRoute
+        ? 0
+        : curveOffset +
+          (seenCount === 0
+            ? 0
+            : (seenCount % 2 === 1 ? 1 : -1) * Math.ceil(seenCount / 2) * 1.1);
       const color = isActive
         ? "#f59e0b"
         : KIND_EDGE_COLORS[e.kind] ?? "#60a5fa";
@@ -581,20 +575,23 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
 
       let idx = 0;
       for (const [pairKey, info] of rolledUp.entries()) {
+        const routeId = `rollup-${pairKey}`;
         const reverseKey = `${info.target}->${info.source}`;
         const hasReverse = rolledUp.has(reverseKey) || directPairSet.has(reverseKey);
         const isReverseSecond = hasReverse && info.source > info.target;
-        const { sourceHandle, targetHandle, curveOffset } = pickHandles(
-          info.source,
-          info.target,
-          hasReverse,
-          isReverseSecond
-        );
+        const storedRoute = activeEdgeRoutes?.[routeId];
+        const { sourceHandle, targetHandle, curveOffset } = storedRoute
+          ? {
+              sourceHandle: storedRoute.source_side,
+              targetHandle: storedRoute.target_side,
+              curveOffset: 0,
+            }
+          : pickHandles(info.source, info.target, hasReverse, isReverseSecond);
         const color = ROLLUP_PALETTE[idx % ROLLUP_PALETTE.length];
         idx++;
 
         pendingSpecs.push({
-          id: `rollup-${pairKey}`,
+          id: routeId,
           source: info.source,
           target: info.target,
           sourceHandle,
@@ -611,11 +608,58 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
       }
     }
 
-    // Dynamic Multi-Obstacle + Label-Pill Collision Solver across ALL edges (direct + rolled-up)
+    // Dynamic Multi-Obstacle + Label-Pill Collision Solver across ALL edges without a stored ELK route
     const placedLabelRects: Rect[] = [];
+    const solvedByEdgeId = new Map<string, { x: number; y: number }>();
 
-    // Sort shortest edges first so tight neighbor pairs claim direct corridors before long skip edges route around
-    const sortedSpecs = [...pendingSpecs].sort((a, b) => {
+    // First reserve labels for edges that already have stored ELK routes or manual label offsets
+    const fallbackSpecs: PendingEdgeSpec[] = [];
+    for (const spec of pendingSpecs) {
+      const storedRoute = activeEdgeRoutes?.[spec.id];
+      const saved = activeEdgeLabels?.[spec.id];
+      const pillW = spec.label
+        ? Math.min(206, Math.round(Math.min(34, spec.label.length) * 6.3 + 22))
+        : 24;
+      const pillH = spec.label ? 26 : 16;
+
+      if (saved) {
+        const sPt = handleCoords(spec.source, spec.sourceHandle);
+        const tPt = handleCoords(spec.target, spec.targetHandle);
+        const [, bezX, bezY] = getBezierPath({
+          sourceX: sPt.x,
+          sourceY: sPt.y,
+          sourcePosition: sPt.pos,
+          targetX: tPt.x,
+          targetY: tPt.y,
+          targetPosition: tPt.pos,
+          curvature: 0.25 + Math.abs(spec.staggeredOffset) * 0.14,
+        });
+        const cx = bezX + saved.x;
+        const cy = bezY + saved.y;
+        if (spec.label) {
+          placedLabelRects.push({ x: cx - pillW / 2, y: cy - pillH / 2, w: pillW, h: pillH });
+        }
+        solvedByEdgeId.set(spec.id, saved);
+        continue;
+      }
+
+      if (storedRoute) {
+        if (spec.label && storedRoute.label_pos) {
+          placedLabelRects.push({
+            x: storedRoute.label_pos.x - pillW / 2,
+            y: storedRoute.label_pos.y - pillH / 2,
+            w: pillW,
+            h: pillH,
+          });
+        }
+        continue;
+      }
+
+      fallbackSpecs.push(spec);
+    }
+
+    // Sort invalidated/dynamic edges shortest-first so tight pairs claim direct corridors first
+    const sortedSpecs = [...fallbackSpecs].sort((a, b) => {
       const sa = nodeRects.get(a.source);
       const ta = nodeRects.get(a.target);
       const sb = nodeRects.get(b.source);
@@ -624,8 +668,6 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
       const db = sb && tb ? Math.hypot(tb.cx - sb.cx, tb.cy - sb.cy) : 0;
       return da - db;
     });
-
-    const solvedByEdgeId = new Map<string, { x: number; y: number }>();
 
     for (const spec of sortedSpecs) {
       const sPt = handleCoords(spec.source, spec.sourceHandle);
@@ -644,17 +686,6 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
         ? Math.min(206, Math.round(Math.min(34, spec.label.length) * 6.3 + 22))
         : 24;
       const pillH = spec.label ? 26 : 16;
-
-      const saved = layout?.edge_labels?.[spec.id];
-      if (saved) {
-        const cx = bezX + saved.x;
-        const cy = bezY + saved.y;
-        if (spec.label) {
-          placedLabelRects.push({ x: cx - pillW / 2, y: cy - pillH / 2, w: pillW, h: pillH });
-        }
-        solvedByEdgeId.set(spec.id, saved);
-        continue;
-      }
 
       // Compute natural anchor (same-side edges always bow OUTWARD, never inward into cards)
       let anchorX = bezX;
@@ -840,7 +871,8 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
       data: {
         curveOffset: spec.staggeredOffset,
         bypassOffset: solvedByEdgeId.get(spec.id),
-        labelOffset: layout?.edge_labels?.[spec.id],
+        labelOffset: activeEdgeLabels?.[spec.id],
+        elkRoute: activeEdgeRoutes?.[spec.id],
       },
       style: {
         stroke: spec.color,
@@ -852,7 +884,7 @@ function CanvasInner({ onRequestAddNode }: { onRequestAddNode: () => void }) {
         color: spec.color,
       },
     }));
-  }, [graph, rfNodes, viewMode, layout?.edge_labels]);
+  }, [graph, rfNodes, viewMode, layout?.edge_labels, layout?.unified_edge_labels, layout?.edge_routes, layout?.unified_edge_routes]);
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setRfNodes((nds) => applyNodeChanges(changes, nds));

@@ -53,11 +53,29 @@ export interface LabelOffset {
   y: number;
 }
 
+export interface Point2D {
+  x: number;
+  y: number;
+}
+
+export type HandleSide = "top" | "bottom" | "left" | "right";
+
+export interface EdgeRoute {
+  points: Point2D[];
+  label_pos?: Point2D | null;
+  source_side: HandleSide;
+  target_side: HandleSide;
+}
+
 export interface Layout {
   version: number;
   nodes: Record<string, NodeLayout>;
+  unified_nodes?: Record<string, NodeLayout>;
   viewports: Record<string, Viewport>;
   edge_labels?: Record<string, LabelOffset>;
+  unified_edge_labels?: Record<string, LabelOffset>;
+  edge_routes?: Record<string, EdgeRoute>;
+  unified_edge_routes?: Record<string, EdgeRoute>;
 }
 
 export interface ChecklistProgress {

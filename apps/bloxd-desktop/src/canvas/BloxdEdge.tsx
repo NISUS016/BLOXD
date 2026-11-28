@@ -7,12 +7,14 @@ import {
   Position,
   useReactFlow,
 } from "@xyflow/react";
+import { EdgeRoute } from "../bindings";
 import { useProjectStore } from "../store/useProjectStore";
 
 interface BloxdEdgeData {
   curveOffset?: number;
   bypassOffset?: { x: number; y: number };
   labelOffset?: { x: number; y: number };
+  elkRoute?: EdgeRoute;
 }
 
 interface Point {
@@ -306,6 +308,7 @@ export const BloxdEdge = memo(function BloxdEdge({
     typeof edgeData?.curveOffset === "number" ? edgeData.curveOffset : 0;
   const bypassOffset = edgeData?.bypassOffset;
   const savedOffset = edgeData?.labelOffset;
+  const elkRoute = edgeData?.elkRoute;
 
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number } | null>(
     null
@@ -331,8 +334,17 @@ export const BloxdEdge = memo(function BloxdEdge({
     curvature: 0.25 + Math.abs(curveOffset) * 0.14,
   });
 
-  const defaultOffsetX = bypassOffset?.x ?? 0;
-  const defaultOffsetY = bypassOffset?.y ?? curveOffset * 30;
+  const hasElkOrthoRoute =
+    wireStyle === "ortho" && Boolean(elkRoute && elkRoute.points.length >= 2);
+
+  const defaultOffsetX =
+    hasElkOrthoRoute && elkRoute?.label_pos
+      ? elkRoute.label_pos.x - bezierLabelX
+      : bypassOffset?.x ?? 0;
+  const defaultOffsetY =
+    hasElkOrthoRoute && elkRoute?.label_pos
+      ? elkRoute.label_pos.y - bezierLabelY
+      : bypassOffset?.y ?? curveOffset * 30;
 
   const activeOffsetX = dragOffset?.x ?? savedOffset?.x ?? defaultOffsetX;
   const activeOffsetY = dragOffset?.y ?? savedOffset?.y ?? defaultOffsetY;
@@ -357,16 +369,20 @@ export const BloxdEdge = memo(function BloxdEdge({
   const renderLabelY = cellY;
 
   if (wireStyle === "ortho") {
-    edgePath = buildRoundedOrthoPath(
-      sourceX,
-      sourceY,
-      sourcePosition,
-      targetX,
-      targetY,
-      targetPosition,
-      cellX,
-      cellY
-    );
+    if (hasElkOrthoRoute && elkRoute) {
+      edgePath = buildRoundedPolyline(elkRoute.points, 10);
+    } else {
+      edgePath = buildRoundedOrthoPath(
+        sourceX,
+        sourceY,
+        sourcePosition,
+        targetX,
+        targetY,
+        targetPosition,
+        cellX,
+        cellY
+      );
+    }
   } else if (wireStyle === "circuit") {
     edgePath = buildCircuitPath(
       sourceX,
@@ -386,6 +402,11 @@ export const BloxdEdge = memo(function BloxdEdge({
 
   const strokeColor =
     (style?.stroke as string | undefined) ?? (selected ? "#60a5fa" : "#64748b");
+  const activeStroke = selected ? "#93c5fd" : strokeColor;
+  const startPt =
+    hasElkOrthoRoute && elkRoute
+      ? elkRoute.points[0]
+      : { x: sourceX, y: sourceY };
 
   return (
     <>
@@ -394,10 +415,19 @@ export const BloxdEdge = memo(function BloxdEdge({
         path={edgePath}
         markerEnd={markerEnd}
         style={{
-          stroke: selected ? "#93c5fd" : strokeColor,
+          stroke: activeStroke,
           strokeWidth: selected ? 2.6 : 1.85,
           ...style,
         }}
+      />
+      <circle
+        cx={startPt.x}
+        cy={startPt.y}
+        r={selected ? 3.8 : 3.1}
+        fill={activeStroke}
+        stroke="#020617"
+        strokeWidth={1.4}
+        className="pointer-events-none"
       />
       {label && (
         <EdgeLabelRenderer>
